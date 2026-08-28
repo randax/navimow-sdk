@@ -1,12 +1,11 @@
-"""数据模型模块。
+"""Modul for datamodellar.
 
-定义 SDK 中使用的所有数据模型，包括枚举类型和数据类。
+Definerer alle datamodellar som SDK-en bruker, inkludert opprekningar og dataklassar.
 """
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
-
+from typing import Any, Optional
 
 _RAW_STATE_TO_CANONICAL: dict[str, str] = {
     "isDocked": "docked",
@@ -28,7 +27,7 @@ _RAW_STATE_TO_CANONICAL: dict[str, str] = {
 
 
 def _normalize_state_value(raw_state: Any) -> str:
-    """Normalize cloud/raw mower state to canonical internal state value."""
+    """Normaliser skya eller rå klipparstatus til intern kanonisk status."""
     if isinstance(raw_state, MowerStatus):
         return raw_state.value
     if not isinstance(raw_state, str):
@@ -37,19 +36,20 @@ def _normalize_state_value(raw_state: Any) -> str:
 
 
 def _extract_battery_value(data: dict[str, Any]) -> int:
-    """Extract battery percentage from multiple payload formats."""
-    def _to_int_or_none(value: Any) -> int | None:
+    """Hent batteriprosent frå fleire ulike lastformat."""
+
+    def _to_int_or_none(value: Any) -> Optional[int]:
         try:
             return int(value)
         except (TypeError, ValueError):
             return None
 
-    # MQTT state payload commonly carries direct battery field.
+    # MQTT-statuslaster har ofte eit direkte batterifelt.
     battery = _to_int_or_none(data.get("battery"))
     if battery is not None:
         return battery
 
-    # HTTP getVehicleStatus payload uses capacityRemaining[].rawValue.
+    # HTTP-laster frå getVehicleStatus bruker capacityRemaining[].rawValue.
     capacity_remaining = data.get("capacityRemaining")
     if isinstance(capacity_remaining, list):
         for item in capacity_remaining:
@@ -61,7 +61,7 @@ def _extract_battery_value(data: dict[str, Any]) -> int:
                 if raw_value is not None:
                     return raw_value
 
-        # Compatibility fallback: if PERCENTAGE unit missing, try first item.
+        # Kompatibilitetsreserve: dersom PERCENTAGE-eining manglar, prøv første element.
         if capacity_remaining and isinstance(capacity_remaining[0], dict):
             raw_value = _to_int_or_none(capacity_remaining[0].get("rawValue"))
             if raw_value is not None:
@@ -71,55 +71,55 @@ def _extract_battery_value(data: dict[str, Any]) -> int:
 
 
 class MowerStatus(Enum):
-    """割草机状态枚举。"""
+    """Opprekning for statusar til robotklipparen."""
 
-    IDLE = "idle"  # 空闲
-    MOWING = "mowing"  # 割草中
-    PAUSED = "paused"  # 已暂停
-    DOCKED = "docked"  # 已回充
-    CHARGING = "charging"  # 充电中
-    ERROR = "error"  # 错误
-    RETURNING = "returning"  # 返回中
-    UNKNOWN = "unknown"  # 未知状态
+    IDLE = "idle"  # I ro
+    MOWING = "mowing"  # Klipper
+    PAUSED = "paused"  # Sett på pause
+    DOCKED = "docked"  # I ladestasjonen
+    CHARGING = "charging"  # Ladar
+    ERROR = "error"  # Feil
+    RETURNING = "returning"  # På veg tilbake
+    UNKNOWN = "unknown"  # Ukjend status
 
 
 class MowerCommand(Enum):
-    """割草机控制指令枚举。"""
+    """Opprekning for kontrollkommandoar til robotklipparen."""
 
-    START = "start"  # 开始割草
-    PAUSE = "pause"  # 暂停割草
-    DOCK = "dock"  # 返回充电站
-    RESUME = "resume"  # 恢复割草
-    STOP = "stop"  # 停止
+    START = "start"  # Start klipping
+    PAUSE = "pause"  # Set på pause
+    DOCK = "dock"  # Returner til ladestasjonen
+    RESUME = "resume"  # Hald fram med klippinga
+    STOP = "stop"  # Stopp
 
 
 class MowerError(Enum):
-    """割草机错误类型枚举。"""
+    """Opprekning for feiltypar på robotklipparen."""
 
-    NONE = "none"  # 无错误
-    STUCK = "stuck"  # 卡住
-    LIFTED = "lifted"  # 被抬起
-    RAIN = "rain"  # 雨天
-    BATTERY_LOW = "battery_low"  # 电池电量低
-    SENSOR_ERROR = "sensor_error"  # 传感器错误
-    MOTOR_ERROR = "motor_error"  # 电机错误
-    BLADE_ERROR = "blade_error"  # 刀片错误
-    UNKNOWN = "unknown"  # 未知错误
+    NONE = "none"  # Ingen feil
+    STUCK = "stuck"  # Sit fast
+    LIFTED = "lifted"  # Løfta opp
+    RAIN = "rain"  # Regn
+    BATTERY_LOW = "battery_low"  # Låg batteristatus
+    SENSOR_ERROR = "sensor_error"  # Sensorfeil
+    MOTOR_ERROR = "motor_error"  # Motorfeil
+    BLADE_ERROR = "blade_error"  # Knivfeil
+    UNKNOWN = "unknown"  # Ukjend feil
 
 
 @dataclass
 class Device:
-    """设备信息数据类。
+    """Dataklasse for einingsinformasjon.
 
-    Attributes:
-        id: 设备 ID
-        name: 设备名称
-        model: 设备型号
-        firmware_version: 固件版本
-        serial_number: 序列号
-        mac_address: MAC 地址（可选）
-        online: 是否在线
-        extra: 额外信息（可选）
+    Eigenskapar:
+        id: Eining-ID
+        name: Namn på eininga
+        model: Einingstype
+        firmware_version: Fastvareversjon
+        serial_number: Serienummer
+        mac_address: MAC-adresse (valfri)
+        online: Om eininga er på nett
+        extra: Ekstra informasjon (valfri)
     """
 
     id: str
@@ -127,22 +127,22 @@ class Device:
     model: str
     firmware_version: str
     serial_number: str
-    mac_address: str | None = None
+    mac_address: Optional[str] = None
     online: bool = False
-    extra: dict[str, Any] | None = None
-    product_key: str | None = None
-    device_name: str | None = None
-    iot_id: str | None = None
+    extra: Optional[dict[str, Any]] = None
+    product_key: Optional[str] = None
+    device_name: Optional[str] = None
+    iot_id: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Device":
-        """从字典创建 Device 实例。
+        """Lag ein Device-instans frå ei ordbok.
 
-        Args:
-            data: 包含设备信息的字典
+        Parametrar:
+            data: Ordboka som inneheld einingsinformasjon
 
-        Returns:
-            Device 实例
+        Retur:
+            Ein Device-instans
         """
         product_key = data.get("productKey") or data.get("product_key")
         device_name = data.get("deviceName") or data.get("device_name") or data.get("name")
@@ -163,12 +163,12 @@ class Device:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """转换为字典。
+        """Gjer om til ei ordbok.
 
-        Returns:
-            包含设备信息的字典
+        Retur:
+            Ei ordbok med einingsinformasjon
         """
-        result = {
+        result: dict[str, Any] = {
             "id": self.id,
             "name": self.name,
             "model": self.model,
@@ -191,14 +191,14 @@ class Device:
 
 @dataclass
 class ThingParams:
-    """Common params wrapper for Thing messages."""
+    """Felles parametrar for Thing-meldingar."""
 
-    iot_id: str | None = None
-    product_key: str | None = None
-    device_name: str | None = None
-    identifier: str | None = None
-    value: Any | None = None
-    raw: dict[str, Any] | None = None
+    iot_id: Optional[str] = None
+    product_key: Optional[str] = None
+    device_name: Optional[str] = None
+    identifier: Optional[str] = None
+    value: Optional[Any] = None
+    raw: Optional[dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ThingParams":
@@ -214,12 +214,12 @@ class ThingParams:
 
 @dataclass
 class ThingStatusMessage:
-    """Thing status message."""
+    """Thing-statusmelding."""
 
-    method: str | None
-    id: str | None
+    method: Optional[str]
+    id: Optional[str]
     params: ThingParams
-    version: str | None
+    version: Optional[str]
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ThingStatusMessage":
@@ -233,12 +233,12 @@ class ThingStatusMessage:
 
 @dataclass
 class ThingPropertiesMessage:
-    """Thing properties message."""
+    """Thing-eigenskapsmelding."""
 
-    method: str | None
-    id: str | None
+    method: Optional[str]
+    id: Optional[str]
     params: ThingParams
-    version: str | None
+    version: Optional[str]
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ThingPropertiesMessage":
@@ -252,12 +252,12 @@ class ThingPropertiesMessage:
 
 @dataclass
 class ThingEventMessage:
-    """Thing event message."""
+    """Thing-hendingmelding."""
 
-    method: str | None
-    id: str | None
+    method: Optional[str]
+    id: Optional[str]
     params: ThingParams
-    version: str | None
+    version: Optional[str]
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ThingEventMessage":
@@ -271,43 +271,43 @@ class ThingEventMessage:
 
 @dataclass
 class DeviceStatus:
-    """设备状态数据类。
+    """Dataklasse for einingsstatus.
 
-    Attributes:
-        device_id: 设备 ID
-        status: 设备状态（MowerStatus 枚举值）
-        battery: 电池电量（0-100）
-        position: 位置信息（可选，格式：{"lat": float, "lng": float}）
-        error_code: 错误代码（MowerError 枚举值）
-        error_message: 错误消息（可选）
-        mowing_time: 本次割草时长（秒，可选）
-        total_mowing_time: 总割草时长（秒，可选）
-        signal_strength: 信号强度（可选）
-        timestamp: 状态更新时间戳（可选）
-        extra: 额外信息（可选）
+    Eigenskapar:
+        device_id: Eining-ID
+        status: Einingstatus (MowerStatus-verdien)
+        battery: Batterinivå (0-100)
+        position: Posisjonsinformasjon (valfri, format: {"lat": float, "lng": float})
+        error_code: Feilkode (MowerError-verdien)
+        error_message: Feilmelding (valfri)
+        mowing_time: Denne klippeøkta i sekund (valfri)
+        total_mowing_time: Total klippetid i sekund (valfri)
+        signal_strength: Signalstyrke (valfri)
+        timestamp: Tidspunkt for statusoppdatering (valfri)
+        extra: Ekstra informasjon (valfri)
     """
 
     device_id: str
     status: MowerStatus
     battery: int
-    position: dict[str, float] | None = None
+    position: Optional[dict[str, float]] = None
     error_code: MowerError = MowerError.NONE
-    error_message: str | None = None
-    mowing_time: int | None = None
-    total_mowing_time: int | None = None
-    signal_strength: int | None = None
-    timestamp: int | None = None
-    extra: dict[str, Any] | None = None
+    error_message: Optional[str] = None
+    mowing_time: Optional[int] = None
+    total_mowing_time: Optional[int] = None
+    signal_strength: Optional[int] = None
+    timestamp: Optional[int] = None
+    extra: Optional[dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DeviceStatus":
-        """从字典创建 DeviceStatus 实例。
+        """Lag ein DeviceStatus-instans frå ei ordbok.
 
-        Args:
-            data: 包含设备状态的字典
+        Parametrar:
+            data: Ordboka som inneheld einingsstatus
 
-        Returns:
-            DeviceStatus 实例
+        Retur:
+            Ein DeviceStatus-instans
         """
         status_source = data.get("status") or data.get("state") or data.get("vehicleState")
         normalized_state = _normalize_state_value(status_source)
@@ -328,9 +328,7 @@ class DeviceStatus:
         if "vehicleState" in data:
             extra["vehicleState"] = data.get("vehicleState")
         if "descriptiveCapacityRemaining" in data:
-            extra["descriptiveCapacityRemaining"] = data.get(
-                "descriptiveCapacityRemaining"
-            )
+            extra["descriptiveCapacityRemaining"] = data.get("descriptiveCapacityRemaining")
         if "capacityRemaining" in data:
             extra["capacityRemaining"] = data.get("capacityRemaining")
         if not extra:
@@ -351,12 +349,12 @@ class DeviceStatus:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """转换为字典。
+        """Gjer om til ei ordbok.
 
-        Returns:
-            包含设备状态的字典
+        Retur:
+            Ei ordbok med einingsstatus
         """
-        result = {
+        result: dict[str, Any] = {
             "device_id": self.device_id,
             "status": self.status.value,
             "battery": self.battery,
@@ -381,22 +379,20 @@ class DeviceStatus:
 
 @dataclass
 class DeviceStateMessage:
-    """Unified state message from MQTT."""
+    """Samla statusmelding frå MQTT."""
 
     device_id: str
-    timestamp: int | None
+    timestamp: Optional[int]
     state: str
-    battery: int | None = None
-    signal_strength: int | None = None
-    position: dict[str, float] | None = None
-    error: dict[str, Any] | None = None
-    metrics: dict[str, Any] | None = None
+    battery: Optional[int] = None
+    signal_strength: Optional[int] = None
+    position: Optional[dict[str, float]] = None
+    error: Optional[dict[str, Any]] = None
+    metrics: Optional[dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceStateMessage":
-        raw_state = payload.get("state") or payload.get("status") or payload.get(
-            "vehicleState"
-        )
+        raw_state = payload.get("state") or payload.get("status") or payload.get("vehicleState")
         normalized_state = _normalize_state_value(raw_state)
         metrics = payload.get("metrics")
         if not isinstance(metrics, dict):
@@ -430,15 +426,15 @@ class DeviceStateMessage:
 
 @dataclass
 class DeviceEventMessage:
-    """Unified event message from MQTT."""
+    """Samla hendingmelding frå MQTT."""
 
     device_id: str
-    timestamp: int | None
+    timestamp: Optional[int]
     type: str
     event: str
-    level: str | None = None
-    message: str | None = None
-    params: dict[str, Any] | None = None
+    level: Optional[str] = None
+    message: Optional[str] = None
+    params: Optional[dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceEventMessage":
@@ -466,7 +462,7 @@ class DeviceEventMessage:
 
 @dataclass
 class DeviceAttributesMessage:
-    """Unified attributes message from MQTT."""
+    """Samla eigenskapmelding frå MQTT."""
 
     device_id: str
     attributes: dict[str, Any]
@@ -487,12 +483,12 @@ class DeviceAttributesMessage:
 
 @dataclass
 class DeviceCommandMessage:
-    """Unified command message for MQTT publish."""
+    """Samla kommandomelding for MQTT-publisering."""
 
     id: str
     device_id: str
     command: str
-    params: dict[str, Any] | None = None
+    params: Optional[dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceCommandMessage":

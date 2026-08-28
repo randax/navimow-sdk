@@ -1,32 +1,29 @@
-"""MQTT 客户端模块。
-
-提供 MQTT 连接、订阅和设备状态更新功能。
-"""
+"""MQTT-klientar for Navimow-SDK-en."""
 
 import asyncio
 import json
 import logging
 import uuid
-from urllib.parse import urlparse
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal, Optional, Tuple, cast
+from urllib.parse import urlparse
 
 from paho.mqtt import client as mqtt_client
 
-from mower_sdk.errors import MowerMQTTError, ERROR_MESSAGES
+from mower_sdk.errors import ERROR_MESSAGES, MowerMQTTError
 from mower_sdk.models import Device, DeviceStatus
 from mower_sdk.utils import parse_json
 
 _LOGGER = logging.getLogger(__name__)
 
 
-def _build_web_client_id(username: str | None) -> str:
+def _build_web_client_id(username: Optional[str]) -> str:
     base = username or "unknown"
     rand = uuid.uuid4().hex[:10]
     return f"web_{base}_{rand}"
 
 
-def _mask_secret(value: str | None) -> str:
+def _mask_secret(value: Optional[str]) -> str:
     if not value:
         return "<empty>"
     if len(value) <= 4:
@@ -34,7 +31,7 @@ def _mask_secret(value: str | None) -> str:
     return f"{value[:2]}***{value[-2:]}"
 
 
-def _format_auth_headers(headers: dict[str, str] | None) -> str:
+def _format_auth_headers(headers: Optional[dict[str, str]]) -> str:
     if not headers:
         return "<none>"
     safe = {}
@@ -46,41 +43,110 @@ def _format_auth_headers(headers: dict[str, str] | None) -> str:
     return str(safe)
 
 
+def _get_running_loop_if_available() -> Optional[asyncio.AbstractEventLoop]:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
+def _validate_event_loop(
+    loop: Optional[asyncio.AbstractEventLoop], owner: str
+) -> Optional[asyncio.AbstractEventLoop]:
+    if loop is not None and loop.is_closed():
+        raise RuntimeError(f"{owner} loop is closed")
+    return loop
+
+
+def _bind_event_loop(
+    bound_loop: Optional[asyncio.AbstractEventLoop],
+    requested_loop: Optional[asyncio.AbstractEventLoop] = None,
+    owner: str = "SDK object",
+    missing_message: Optional[str] = None,
+) -> asyncio.AbstractEventLoop:
+    if bound_loop is not None and requested_loop is not None:
+        if bound_loop is not requested_loop:
+            raise RuntimeError(f"{owner} is bound to a different event loop")
+
+    loop = _validate_event_loop(requested_loop or bound_loop, owner)
+    running_loop = _get_running_loop_if_available()
+
+    if loop is None:
+        if running_loop is None:
+            raise RuntimeError(
+                missing_message
+                or f"{owner} requires a running event loop or an explicit loop= argument"
+            )
+        loop = running_loop
+    elif running_loop is not None and running_loop is not loop:
+        raise RuntimeError(f"{owner} is bound to a different event loop")
+
+    return loop
+
+
+def _reason_code_is_failure(reason_code: Any) -> bool:
+    return bool(getattr(reason_code, "is_failure", reason_code != 0))
+
+
+def _call_soon_threadsafe(
+    loop: asyncio.AbstractEventLoop,
+    callback: Callable[..., Any],
+    *args: Any,
+) -> bool:
+    if loop.is_closed():
+        _LOGGER.warning("Event loop is closed; dropping late MQTT callback")
+        return False
+    try:
+        loop.call_soon_threadsafe(callback, *args)
+    except RuntimeError:
+        _LOGGER.warning("Event loop rejected a late MQTT callback", exc_info=True)
+        return False
+    return True
+
+
+def _close_awaitable(awaitable: Awaitable[Any]) -> None:
+    close = getattr(awaitable, "close", None)
+    if callable(close):
+        close()
+
+
 class MowerMQTT:
-    """MQTT 客户端。
+    """MQTT-klient.
 
-    提供 MQTT 连接、订阅和设备状态更新功能，支持同步和异步接口。
+    Gjev funksjonar for MQTT-tilkopling, abonnement og oppdatering av einingsstatus,
+    med støtte for både synkrone og asynkrone grensesnitt.
 
-    Attributes:
-        broker: MQTT broker 地址
-        port: MQTT broker 端口
-        username: MQTT 用户名（可选）
-        password: MQTT 密码（可选）
-        status_cache: 设备状态缓存
-        _async_client: 异步 MQTT 客户端
-        _sync_client: 同步 MQTT 客户端
-        _callbacks: 回调函数字典
+    Eigenskapar:
+        broker: MQTT-meglaradresse
+        port: MQTT-port
+        username: MQTT-brukarnamn (valfritt)
+        password: MQTT-passord (valfritt)
+        status_cache: Mellombels lager for einingsstatus
+        _async_client: Asynkron MQTT-klient
+        _sync_client: Synkron MQTT-klient
+        _callbacks: Ordbok med tilbakekall
     """
 
     def __init__(
         self,
         broker: str,
         port: int = 1883,
-        username: str | None = None,
-        password: str | None = None,
-        ws_path: str | None = None,
-        auth_headers: dict[str, str] | None = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        ws_path: Optional[str] = None,
+        auth_headers: Optional[dict[str, str]] = None,
         keepalive_seconds: int = 2400,
         reconnect_min_delay: int = 1,
         reconnect_max_delay: int = 60,
-    ):
-        """初始化 MQTT 客户端。
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+    ) -> None:
+        """Initialiser MQTT-klienten.
 
-        Args:
-            broker: MQTT broker 地址
-            port: MQTT broker 端口
-            username: MQTT 用户名（可选）
-            password: MQTT 密码（可选）
+        Parametrar:
+            broker: Adresse til MQTT-meglaren
+            port: MQTT-porten
+            username: MQTT-brukarnamn (valfritt)
+            password: MQTT-passord (valfritt)
         """
         self.broker = broker
         self.port = port
@@ -88,30 +154,35 @@ class MowerMQTT:
         self.password = password
         self.ws_path = ws_path
         self.auth_headers = auth_headers
-        # KeepAlive 是 MQTT 协议层保活（PINGREQ/PINGRESP），优先于应用层“心跳消息”。
-        # 这里默认 40 分钟，确保在“1 小时无流量断连”的 broker/LB 前有协议层流量。
+        # KeepAlive er MQTT-lagsnivået si livhaldssignalering og kjem før app-nivå hjarteslag.
+        # Standardverdien på 40 minutt held oppe trafikk før broker eller lastbalanserar kuttar ei stille økt.
         self.keepalive_seconds = max(30, int(keepalive_seconds))
         self.reconnect_min_delay = max(0, int(reconnect_min_delay))
         self.reconnect_max_delay = max(self.reconnect_min_delay, int(reconnect_max_delay))
         self._use_tls = bool(ws_path)
         self._client_id = _build_web_client_id(self.username)
+        self._loop = _validate_event_loop(loop, "MowerMQTT")
         self.status_cache: dict[str, DeviceStatus] = {}
-        self._async_client: mqtt_client.Client | None = None
-        self._sync_client: mqtt_client.Client | None = None
-        self._async_stop_event: asyncio.Event | None = None
-        self._callbacks: dict[str, dict[str, Callable]] = {}
+        self._async_client: Optional[mqtt_client.Client] = None
+        self._sync_client: Optional[mqtt_client.Client] = None
+        self._async_stop_event: Optional[asyncio.Event] = None
+        self._callbacks: dict[str, dict[str, Optional[Callable[..., Any]]]] = {}
         self._connected = False
+
+    @property
+    def loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        return self._loop
 
     def configure_wss(
         self,
         mqtt_host: str,
         mqtt_url: str,
-        username: str | None,
-        password: str | None,
-        auth_headers: dict[str, str] | None,
+        username: Optional[str],
+        password: Optional[str],
+        auth_headers: Optional[dict[str, str]],
         port: int = 443,
     ) -> None:
-        """配置 WSS 连接参数。"""
+        """Set opp WSS-tilkopling."""
         parsed = urlparse(mqtt_host)
         host = parsed.hostname or mqtt_host
         self.broker = host
@@ -123,15 +194,19 @@ class MowerMQTT:
         self._use_tls = True
 
     def _build_client(self) -> mqtt_client.Client:
-        transport = "websockets" if self.ws_path else "tcp"
-        client = mqtt_client.Client(client_id=self._client_id, transport=transport)
+        transport: Literal["websockets", "tcp"] = "websockets" if self.ws_path else "tcp"
+        client = mqtt_client.Client(
+            callback_api_version=mqtt_client.CallbackAPIVersion.VERSION2,
+            client_id=self._client_id,
+            transport=transport,
+        )
         if self.username and self.password:
             client.username_pw_set(self.username, self.password)
         if self.ws_path:
             client.ws_set_options(path=self.ws_path, headers=self.auth_headers or {})
         if self._use_tls:
             client.tls_set()
-        # 断线自动重连退避（paho 在 loop_start + connect_async 场景下会按该策略重连）
+        # Automatisk attkopling brukar denne tilbakefallsstrategien når paho køyrer i bakgrunnssløyfa.
         client.reconnect_delay_set(
             min_delay=self.reconnect_min_delay, max_delay=self.reconnect_max_delay
         )
@@ -147,49 +222,30 @@ class MowerMQTT:
         return client
 
     def _get_status_topic(self, device_id: str) -> str:
-        """获取设备状态 topic。
-
-        Args:
-            device_id: 设备 ID
-
-        Returns:
-            Topic 路径
-        """
-        # TODO: 根据实际 MQTT topic 格式调整
+        """Hent topic for einingstilstand."""
+        # TODO: Tilpass etter faktisk MQTT-emneformat.
         return f"device/{device_id}/status"
 
     def _get_event_topic(self, device_id: str) -> str:
-        """获取设备事件 topic。
-
-        Args:
-            device_id: 设备 ID
-
-        Returns:
-            Topic 路径
-        """
-        # TODO: 根据实际 MQTT topic 格式调整
+        """Hent topic for einingshendingar."""
+        # TODO: Tilpass etter faktisk MQTT-emneformat.
         return f"device/{device_id}/event"
 
     async def async_connect(self) -> None:
-        """异步连接 MQTT broker。
-
-        Raises:
-            MowerMQTTError: 如果连接失败
-        """
+        """Klargjer MQTT-klienten for asynkron bruk."""
+        self._loop = _bind_event_loop(
+            self._loop,
+            owner="MowerMQTT",
+            missing_message="MowerMQTT.async_connect() requires a running event loop or an explicit loop= argument",
+        )
         try:
-            # 连接在订阅时执行，这里仅确保配置有效
+            # Sjølve tilkoplinga skjer ved abonnement; her stadfestar vi berre at løkka er gyldig.
             self._connected = True
         except Exception as e:
-            raise MowerMQTTError(
-                f"{ERROR_MESSAGES['MQTT_CONNECTION_FAILED']}: {str(e)}"
-            ) from e
+            raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_CONNECTION_FAILED']}: {str(e)}") from e
 
     def connect(self) -> None:
-        """同步连接 MQTT broker。
-
-        Raises:
-            MowerMQTTError: 如果连接失败
-        """
+        """Kople til MQTT-broker synkront."""
         try:
             self._sync_client = self._build_client()
             _LOGGER.info(
@@ -203,8 +259,8 @@ class MowerMQTT:
                 _format_auth_headers(self.auth_headers),
             )
 
-            def on_connect(client, userdata, flags, rc):
-                if rc == 0:
+            def on_connect(client, userdata, flags, reason_code, properties=None):
+                if not _reason_code_is_failure(reason_code):
                     self._connected = True
                     _LOGGER.info(
                         "MQTT connected (sync): broker=%s port=%s",
@@ -213,7 +269,7 @@ class MowerMQTT:
                     )
                 else:
                     raise MowerMQTTError(
-                        f"{ERROR_MESSAGES['MQTT_CONNECTION_FAILED']}: Return code {rc}"
+                        f"{ERROR_MESSAGES['MQTT_CONNECTION_FAILED']}: Return code {reason_code}"
                     )
 
             self._sync_client.on_connect = on_connect
@@ -226,36 +282,30 @@ class MowerMQTT:
             self._sync_client.connect(self.broker, self.port, self.keepalive_seconds)
             self._sync_client.loop_start()
         except Exception as e:
-            raise MowerMQTTError(
-                f"{ERROR_MESSAGES['MQTT_CONNECTION_FAILED']}: {str(e)}"
-            ) from e
+            raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_CONNECTION_FAILED']}: {str(e)}") from e
 
     async def async_subscribe_device(
         self,
         device_id: str,
-        on_status_update: Callable[[DeviceStatus], None] | None = None,
-        on_event: Callable[[dict[str, Any]], None] | None = None,
+        on_status_update: Optional[Callable[[DeviceStatus], None]] = None,
+        on_event: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> None:
-        """异步订阅设备状态和事件。
-
-        Args:
-            device_id: 设备 ID
-            on_status_update: 状态更新回调函数
-            on_event: 事件回调函数
-
-        Raises:
-            MowerMQTTError: 如果订阅失败
-        """
+        """Abonner asynkront på status og hendingar for ei eining."""
         status_topic = self._get_status_topic(device_id)
         event_topic = self._get_event_topic(device_id)
 
-        # 保存回调函数
+        # Ta vare på tilbakekall for denne eininga.
         self._callbacks[device_id] = {
             "status": on_status_update,
             "event": on_event,
         }
 
-        loop = asyncio.get_running_loop()
+        self._loop = _bind_event_loop(
+            self._loop,
+            owner="MowerMQTT",
+            missing_message="MowerMQTT.async_subscribe_device() requires a running event loop or an explicit loop= argument",
+        )
+        loop = self._loop
         self._async_stop_event = asyncio.Event()
         try:
             self._async_client = self._build_client()
@@ -271,9 +321,9 @@ class MowerMQTT:
                 device_id,
             )
 
-            def on_connect(_client, _userdata, _flags, rc) -> None:
-                if rc != 0:
-                    _LOGGER.error("MQTT connection failed: rc=%s", rc)
+            def on_connect(_client, _userdata, _flags, reason_code, _properties=None) -> None:
+                if _reason_code_is_failure(reason_code):
+                    _LOGGER.error("MQTT connection failed: rc=%s", reason_code)
                     return
                 self._connected = True
                 _LOGGER.info(
@@ -298,7 +348,7 @@ class MowerMQTT:
                         msg.topic,
                         payload_text,
                     )
-                    payload = parse_json(msg.payload)
+                    payload = cast(dict[str, Any], parse_json(msg.payload))
                     topic = msg.topic
                     _LOGGER.debug(
                         "MQTT message (async): topic=%s bytes=%d device=%s",
@@ -311,15 +361,15 @@ class MowerMQTT:
                         self.status_cache[device_id] = status
                         callback = self._callbacks.get(device_id, {}).get("status")
                         if callback:
-                            loop.call_soon_threadsafe(callback, status)
+                            _call_soon_threadsafe(loop, callback, status)
                     elif topic == event_topic:
                         callback = self._callbacks.get(device_id, {}).get("event")
                         if callback:
-                            loop.call_soon_threadsafe(callback, payload)
+                            _call_soon_threadsafe(loop, callback, payload)
                 except Exception as e:
                     _LOGGER.exception("Error processing MQTT message: %s", e)
 
-            def on_disconnect(_client, _userdata, _rc) -> None:
+            def on_disconnect(_client, _userdata, *disconnect_args) -> None:
                 _LOGGER.debug(
                     "MQTT disconnected (async): broker=%s port=%s device=%s",
                     self.broker,
@@ -327,7 +377,7 @@ class MowerMQTT:
                     device_id,
                 )
                 if self._async_stop_event:
-                    self._async_stop_event.set()
+                    _call_soon_threadsafe(loop, self._async_stop_event.set)
 
             self._async_client.on_connect = on_connect
             self._async_client.on_message = on_message
@@ -344,28 +394,18 @@ class MowerMQTT:
 
             await self._async_stop_event.wait()
         except Exception as e:
-            raise MowerMQTTError(
-                f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}"
-            ) from e
+            raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}") from e
 
     def subscribe_device(
         self,
         device_id: str,
-        on_status_update: Callable[[DeviceStatus], None] | None = None,
-        on_event: Callable[[dict[str, Any]], None] | None = None,
+        on_status_update: Optional[Callable[[DeviceStatus], None]] = None,
+        on_event: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> None:
-        """同步订阅设备状态和事件。
-
-        Args:
-            device_id: 设备 ID
-            on_status_update: 状态更新回调函数
-            on_event: 事件回调函数
-
-        Raises:
-            MowerMQTTError: 如果订阅失败
-        """
+        """Abonner synkront på status og hendingar for ei eining."""
         if not self._sync_client:
             self.connect()
+        assert self._sync_client is not None
 
         status_topic = self._get_status_topic(device_id)
         event_topic = self._get_event_topic(device_id)
@@ -388,7 +428,7 @@ class MowerMQTT:
                 )
 
                 if topic == status_topic:
-                    # 处理状态更新
+                    # Handsam statusoppdatering.
                     status = DeviceStatus.from_dict(payload)
                     self.status_cache[device_id] = status
 
@@ -396,12 +436,12 @@ class MowerMQTT:
                         on_status_update(status)
 
                 elif topic == event_topic:
-                    # 处理事件
+                    # Handsam hending.
                     if on_event:
                         on_event(payload)
 
             except Exception as e:
-                # 记录错误但继续处理
+                # Logg feilen, men hald fram med handsaminga
                 print(f"Error processing MQTT message: {e}")
 
         try:
@@ -414,29 +454,25 @@ class MowerMQTT:
             self._sync_client.subscribe(status_topic)
             self._sync_client.subscribe(event_topic)
 
-            # 保存回调函数
+            # Ta vare på tilbakekall for seinare meldingar.
             self._callbacks[device_id] = {
                 "status": on_status_update,
                 "event": on_event,
             }
         except Exception as e:
-            raise MowerMQTTError(
-                f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}"
-            ) from e
+            raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}") from e
 
-    def get_cached_status(self, device_id: str) -> DeviceStatus | None:
-        """获取缓存的设备状态。
-
-        Args:
-            device_id: 设备 ID
-
-        Returns:
-            设备状态，如果不存在则返回 None
-        """
+    def get_cached_status(self, device_id: str) -> Optional[DeviceStatus]:
+        """Hent bufra einingstilstand."""
         return self.status_cache.get(device_id)
 
     async def async_disconnect(self) -> None:
-        """异步断开 MQTT 连接。"""
+        """Bryt MQTT-tilkopling asynkront."""
+        self._loop = _bind_event_loop(
+            self._loop,
+            owner="MowerMQTT",
+            missing_message="MowerMQTT.async_disconnect() requires a running event loop or an explicit loop= argument",
+        )
         if self._async_client:
             self._async_client.loop_stop()
             self._async_client.disconnect()
@@ -446,7 +482,7 @@ class MowerMQTT:
         self._async_client = None
 
     def disconnect(self) -> None:
-        """同步断开 MQTT 连接。"""
+        """Bryt MQTT-tilkopling synkront."""
         if self._sync_client:
             self._sync_client.loop_stop()
             self._sync_client.disconnect()
@@ -454,18 +490,18 @@ class MowerMQTT:
 
 
 class NavimowMQTT:
-    """Navimow MQTT client for cloud topics."""
+    """Navimow-MQTT-klient for skyemne."""
 
     def __init__(
         self,
         broker: str,
         port: int,
-        username: str | None,
-        password: str | None,
+        username: Optional[str],
+        password: Optional[str],
         records: list[Device],
-        ws_path: str | None = None,
-        auth_headers: dict[str, str] | None = None,
-        loop: asyncio.AbstractEventLoop | None = None,
+        ws_path: Optional[str] = None,
+        auth_headers: Optional[dict[str, str]] = None,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
         keepalive_seconds: int = 2400,
         reconnect_min_delay: int = 1,
         reconnect_max_delay: int = 60,
@@ -476,7 +512,7 @@ class NavimowMQTT:
         self.username = username
         self.password = password
         self.records = records
-        self.loop = loop or asyncio.get_event_loop()
+        self.loop = _validate_event_loop(loop, "NavimowMQTT")
         self.ws_path = ws_path
         self.auth_headers = auth_headers
         self._use_tls = bool(ws_path) or parsed.scheme == "wss"
@@ -485,13 +521,17 @@ class NavimowMQTT:
         self.reconnect_min_delay = max(0, int(reconnect_min_delay))
         self.reconnect_max_delay = max(self.reconnect_min_delay, int(reconnect_max_delay))
 
-        self.on_connected: Callable[[], Awaitable[None]] | None = None
-        self.on_ready: Callable[[], Awaitable[None]] | None = None
-        self.on_message: Callable[[str, bytes, str], Awaitable[None]] | None = None
-        self.on_disconnected: Callable[[], Awaitable[None]] | None = None
+        self.on_connected: Optional[Callable[[], Awaitable[None]]] = None
+        self.on_ready: Optional[Callable[[], Awaitable[None]]] = None
+        self.on_message: Optional[Callable[[str, bytes, str], Awaitable[None]]] = None
+        self.on_disconnected: Optional[Callable[[], Awaitable[None]]] = None
 
-        transport = "websockets" if self.ws_path else "tcp"
-        self.client = mqtt_client.Client(client_id=self._client_id, transport=transport)
+        transport: Literal["websockets", "tcp"] = "websockets" if self.ws_path else "tcp"
+        self.client = mqtt_client.Client(
+            callback_api_version=mqtt_client.CallbackAPIVersion.VERSION2,
+            client_id=self._client_id,
+            transport=transport,
+        )
         if self.username and self.password:
             self.client.username_pw_set(self.username, self.password)
         if self.ws_path:
@@ -518,10 +558,28 @@ class NavimowMQTT:
     def is_connected(self) -> bool:
         return self.client.is_connected()
 
+    def _bind_loop(
+        self,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        missing_message: Optional[str] = None,
+    ) -> asyncio.AbstractEventLoop:
+        self.loop = _bind_event_loop(
+            self.loop,
+            loop,
+            owner="NavimowMQTT",
+            missing_message=missing_message
+            or "NavimowMQTT.connect_async() requires a running event loop or an explicit loop= argument",
+        )
+        return self.loop
+
     def _build_new_client(self) -> mqtt_client.Client:
-        """重建 paho MQTT client，使用当前最新的凭据和配置。"""
-        transport = "websockets" if self.ws_path else "tcp"
-        client = mqtt_client.Client(client_id=self._client_id, transport=transport)
+        """Bygg paho-klienten på nytt med oppdaterte legitimasjonar og val."""
+        transport: Literal["websockets", "tcp"] = "websockets" if self.ws_path else "tcp"
+        client = mqtt_client.Client(
+            callback_api_version=mqtt_client.CallbackAPIVersion.VERSION2,
+            client_id=self._client_id,
+            transport=transport,
+        )
         if self.username and self.password:
             client.username_pw_set(self.username, self.password)
         if self.ws_path:
@@ -538,15 +596,11 @@ class NavimowMQTT:
 
     def update_credentials(
         self,
-        username: str | None = None,
-        password: str | None = None,
-        auth_headers: dict[str, str] | None = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        auth_headers: Optional[dict[str, str]] = None,
     ) -> None:
-        """更新 MQTT 凭据。若当前已连接，只更新存储值，待下次重连时生效；若已断开，则立即重连。
-
-        paho-mqtt 的 ws_set_options 只在建立连接前有效，因此重连时需要重建 client。
-        已连接时不主动断开，避免因 OAuth token 轮换导致每小时强制断连。
-        """
+        """Oppdater MQTT-legitimasjonar og bygg klienten opp att ved behov."""
         changed = False
         if username is not None and username != self.username:
             self.username = username
@@ -562,8 +616,8 @@ class NavimowMQTT:
             return
 
         if self.client.is_connected():
-            # 当前连接正常，新凭据已存储，待 broker 下次断连后重连时自动生效。
-            # 不主动断开，避免 token 每小时轮换触发不必要的重连和"设备不可用"。
+            # Ei aktiv tilkopling held fram; nye legitimasjonar blir brukte ved neste attkopling.
+            # Vi koplar ikkje frå ved tokenfornying; det hindrar attkopling og «eining utilgjengeleg».
             _LOGGER.info(
                 "NavimowMQTT credentials updated while connected (will apply on next reconnect): broker=%s port=%s",
                 self.broker,
@@ -571,7 +625,7 @@ class NavimowMQTT:
             )
             return
 
-        # 当前已断开，立即用新凭据重建 client 并重连。
+        # Når tilkoplinga allereie er nede kan vi byggje klienten opp att med ein gong.
         _LOGGER.info(
             "NavimowMQTT credentials updated while disconnected, rebuilding and reconnecting: broker=%s port=%s",
             self.broker,
@@ -587,6 +641,7 @@ class NavimowMQTT:
         self.connect_async()
 
     def connect_async(self) -> None:
+        self._bind_loop()
         if not self.is_connected:
             _LOGGER.info(
                 "NavimowMQTT connect details: transport=%s broker=%s port=%s ws_path=%s tls=%s username=%s auth_headers=%s",
@@ -635,15 +690,11 @@ class NavimowMQTT:
             self.client.subscribe("/downlink/vehicle/+/realtimeDate/attributes")
             return
 
-        _LOGGER.info(
-            "NavimowMQTT subscribing cloud topics for %d device(s)", len(device_ids)
-        )
+        _LOGGER.info("NavimowMQTT subscribing cloud topics for %d device(s)", len(device_ids))
         for device_id in device_ids:
             self.client.subscribe(f"/downlink/vehicle/{device_id}/realtimeDate/state")
             self.client.subscribe(f"/downlink/vehicle/{device_id}/realtimeDate/event")
-            self.client.subscribe(
-                f"/downlink/vehicle/{device_id}/realtimeDate/attributes"
-            )
+            self.client.subscribe(f"/downlink/vehicle/{device_id}/realtimeDate/attributes")
 
     def unsubscribe_all(self, product_key: str, device_name: str) -> None:
         device_ids = self._get_device_ids()
@@ -654,25 +705,23 @@ class NavimowMQTT:
             self.client.unsubscribe("/downlink/vehicle/+/realtimeDate/attributes")
             return
 
-        _LOGGER.info(
-            "NavimowMQTT unsubscribing cloud topics for %d device(s)", len(device_ids)
-        )
+        _LOGGER.info("NavimowMQTT unsubscribing cloud topics for %d device(s)", len(device_ids))
         for device_id in device_ids:
             self.client.unsubscribe(f"/downlink/vehicle/{device_id}/realtimeDate/state")
             self.client.unsubscribe(f"/downlink/vehicle/{device_id}/realtimeDate/event")
-            self.client.unsubscribe(
-                f"/downlink/vehicle/{device_id}/realtimeDate/attributes"
-            )
+            self.client.unsubscribe(f"/downlink/vehicle/{device_id}/realtimeDate/attributes")
 
     def _schedule(self, coro: Awaitable[None]) -> None:
-        if self.loop and self.loop.is_running():
-            self.loop.call_soon_threadsafe(asyncio.create_task, coro)
-        else:
+        if self.loop is None:
+            _close_awaitable(coro)
             _LOGGER.debug("Event loop not running, skip scheduling MQTT callback")
+            return
+        if not _call_soon_threadsafe(self.loop, asyncio.create_task, coro):
+            _close_awaitable(coro)
 
-    def _on_connect(self, _client, _userdata, _flags, rc) -> None:
-        if rc != 0:
-            _LOGGER.error("MQTT connection failed: rc=%s", rc)
+    def _on_connect(self, _client, _userdata, _flags, reason_code, _properties=None) -> None:
+        if _reason_code_is_failure(reason_code):
+            _LOGGER.error("MQTT connection failed: rc=%s", reason_code)
             return
         _LOGGER.info(
             "NavimowMQTT connected: broker=%s port=%s",
@@ -686,17 +735,19 @@ class NavimowMQTT:
         if self.on_ready is not None:
             self._schedule(self.on_ready())
 
-    def _on_disconnect(self, _client, _userdata, _rc) -> None:
+    def _on_disconnect(
+        self, _client, _userdata, _flags, reason_code=None, _properties=None
+    ) -> None:
         _LOGGER.debug(
             "NavimowMQTT disconnected: broker=%s port=%s rc=%s",
             self.broker,
             self.port,
-            _rc,
+            reason_code,
         )
         if self.on_disconnected is not None:
             self._schedule(self.on_disconnected())
 
-    def _parse_topic(self, topic: str) -> tuple[str | None, str | None]:
+    def _parse_topic(self, topic: str) -> Tuple[Optional[str], Optional[str]]:
         parts = topic.split("/")
         if parts and parts[0] == "":
             parts = parts[1:]

@@ -1,34 +1,38 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "navimow-sdk"
-version = "0.1.2"
 description = "Python SDK for cloud mower platform integration with smart home systems."
 readme = "README.md"
-requires-python = ">=3.11"
-license = {text = "MIT"}
+requires-python = ">=3.9.2,<3.15"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
 authors = [
     {name = "Navimow R&D Team", email = "segwaynavimowapp@gmail.com"}
 ]
 keywords = ["mower", "sdk", "home-assistant", "iot", "mqtt", "oauth2"]
+dynamic = ["version"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Home Automation",
 ]
 
 dependencies = [
-    "aiohttp>=3.9.0",
-    "requests>=2.31.0",
-    "paho-mqtt>=1.6.1",
-    "aiomqtt>=2.0.0",
+    "aiohttp>=3.13.3,<3.14",
+    "paho-mqtt>=2.1,<3",
 ]
 
 [project.optional-dependencies]
@@ -36,29 +40,36 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "black>=23.0.0",
-    "mypy>=1.0.0",
+    "mypy>=1.0.0,<2",
     "ruff>=0.1.0",
+    "build>=1.2.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/segwaynavimow/navimow-sdk"
-Documentation = "https://github.com/segwaynavimow/navimow-sdk#readme"
-Repository = "https://github.com/segwaynavimow/navimow-sdk"
-Issues = "https://github.com/segwaynavimow/navimow-sdk/issues"
+Homepage = "https://github.com/randax/navimow-sdk"
+Documentation = "https://github.com/randax/navimow-sdk#readme"
+Repository = "https://github.com/randax/navimow-sdk"
+Issues = "https://github.com/randax/navimow-sdk/issues"
 
 [tool.setuptools]
 packages = ["mower_sdk"]
 
 [tool.black]
 line-length = 100
-target-version = ["py311"]
+target-version = ["py39"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.setuptools.dynamic]
+version = {attr = "mower_sdk.__version__"}

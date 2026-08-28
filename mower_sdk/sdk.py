@@ -1,4 +1,4 @@
-"""Navimow SDK facade for MQTT-based integration."""
+"""Navimow-SDK med MQTT-basert integrasjon."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 import logging
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Optional
 
 from mower_sdk.models import (
     DeviceAttributesMessage,
@@ -21,12 +21,12 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class NavimowSDK:
-    """SDK facade.
+    """SDK-fasade for MQTT-styrt integrasjon.
 
-    Notes:
-        - on_state/on_event/on_attributes callbacks are synchronous.
-        - callbacks are invoked from the MQTT thread/event loop context.
-          Home Assistant must switch to hass loop via call_soon_threadsafe or
+    Merknader:
+        - on_state/on_event/on_attributes-tilbakekall er synkrone.
+        - Tilbakekalla blir køyrde frå MQTT-tråden eller event loop-konteksten.
+          Home Assistant må byte til hass-løkka via call_soon_threadsafe eller
           run_coroutine_threadsafe.
     """
 
@@ -34,17 +34,17 @@ class NavimowSDK:
         self,
         broker: str,
         port: int,
-        username: str | None = None,
-        password: str | None = None,
-        ws_path: str | None = None,
-        auth_headers: dict[str, str] | None = None,
-        loop: asyncio.AbstractEventLoop | None = None,
-        records: list[Any] | None = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        ws_path: Optional[str] = None,
+        auth_headers: Optional[dict[str, str]] = None,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        records: Optional[list[Any]] = None,
         keepalive_seconds: int = 2400,
         reconnect_min_delay: int = 1,
         reconnect_max_delay: int = 60,
     ) -> None:
-        self._loop = loop or asyncio.get_event_loop()
+        self._loop = loop
         self._mqtt = NavimowMQTT(
             broker=broker,
             port=port,
@@ -58,6 +58,7 @@ class NavimowSDK:
             reconnect_min_delay=reconnect_min_delay,
             reconnect_max_delay=reconnect_max_delay,
         )
+        self._loop = self._mqtt.loop
         self._mqtt.on_message = self._on_mqtt_message
 
         self._state_callbacks: list[Callable[[DeviceStateMessage], None]] = []
@@ -68,24 +69,28 @@ class NavimowSDK:
         self._attributes_cache: dict[str, DeviceAttributesMessage] = {}
 
     def connect(self) -> None:
-        """Connect to MQTT broker and start consuming."""
-        self._mqtt.connect_async()
+        """Kople til MQTT-meglaren og start mottak."""
+        try:
+            self._mqtt.connect_async()
+        except RuntimeError as exc:
+            if self._loop is None and self._mqtt.loop is None:
+                raise RuntimeError(
+                    "NavimowSDK.connect() requires a running event loop or an explicit loop= argument"
+                ) from exc
+            raise
+        self._loop = self._mqtt.loop
 
     def disconnect(self) -> None:
-        """Disconnect from MQTT broker."""
+        """Bryt tilkoplinga til MQTT-meglaren."""
         self._mqtt.disconnect()
 
     def update_mqtt_credentials(
         self,
-        username: str | None = None,
-        password: str | None = None,
-        auth_headers: dict[str, str] | None = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        auth_headers: Optional[dict[str, str]] = None,
     ) -> None:
-        """更新 MQTT 凭据。若与当前值不同，将重建 paho client 并重连。
-
-        用于 OAuth token 刷新后同步更新 MQTT WebSocket 认证头，
-        以及更新服务端下发的 MQTT username/password。
-        """
+        """Oppdater MQTT-legitimasjonen og bygg klienten opp att ved behov."""
         self._mqtt.update_credentials(
             username=username,
             password=password,
@@ -101,15 +106,13 @@ class NavimowSDK:
     def on_attributes(self, callback: Callable[[DeviceAttributesMessage], None]) -> None:
         self._attributes_callbacks.append(callback)
 
-    def get_cached_state(self, device_id: str) -> DeviceStateMessage | None:
+    def get_cached_state(self, device_id: str) -> Optional[DeviceStateMessage]:
         return self._state_cache.get(device_id)
 
-    def get_cached_attributes(self, device_id: str) -> DeviceAttributesMessage | None:
+    def get_cached_attributes(self, device_id: str) -> Optional[DeviceAttributesMessage]:
         return self._attributes_cache.get(device_id)
 
-    async def _on_mqtt_message(
-        self, topic: str, payload: bytes, device_id: str
-    ) -> None:
+    async def _on_mqtt_message(self, topic: str, payload: bytes, device_id: str) -> None:
         try:
             payload_dict = json.loads(payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -130,21 +133,21 @@ class NavimowSDK:
         channel = parts[4]
 
         if channel == "state":
-            msg = DeviceStateMessage.from_dict(payload_dict)
-            self._state_cache[msg.device_id] = msg
-            for cb in list(self._state_callbacks):
-                cb(msg)
+            state_message = DeviceStateMessage.from_dict(payload_dict)
+            self._state_cache[state_message.device_id] = state_message
+            for state_callback in list(self._state_callbacks):
+                state_callback(state_message)
             return
         if channel == "event":
-            msg = DeviceEventMessage.from_dict(payload_dict)
-            for cb in list(self._event_callbacks):
-                cb(msg)
+            event_message = DeviceEventMessage.from_dict(payload_dict)
+            for event_callback in list(self._event_callbacks):
+                event_callback(event_message)
             return
         if channel == "attributes":
-            msg = DeviceAttributesMessage.from_dict(payload_dict)
-            self._attributes_cache[msg.device_id] = msg
-            for cb in list(self._attributes_callbacks):
-                cb(msg)
+            attributes_message = DeviceAttributesMessage.from_dict(payload_dict)
+            self._attributes_cache[attributes_message.device_id] = attributes_message
+            for attributes_callback in list(self._attributes_callbacks):
+                attributes_callback(attributes_message)
 
     def _publish_command(self, message: DeviceCommandMessage) -> None:
         if not self._mqtt.is_connected:

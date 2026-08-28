@@ -3,25 +3,25 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Virtual environments
+# Virtuelle miljø
 .venv/
 venv/
 env/
 
-# Distribution / packaging
+# Distribusjon / pakking
 build/
 dist/
 *.egg-info/
 *.egg
 
-# Tooling caches
+# Verktøybuffer
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 htmlcov/
 
-# IDE / editor
+# IDE / redigering
 .idea/
 .vscode/
 
@@ -29,6 +29,5 @@ htmlcov/
 .DS_Store
 mower_sdk/.DS_Store
 
-# Python version management
+# Python-versjonsstyring
 .python-version
-

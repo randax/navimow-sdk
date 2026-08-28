@@ -1,6 +1,8 @@
-"""State manager for device updates."""
+"""Tilstandsbehandlar for einingsoppdateringar."""
 
 from __future__ import annotations
+
+from typing import Any, Optional
 
 from mower_sdk.event import DataEvent
 from mower_sdk.models import (
@@ -12,7 +14,7 @@ from mower_sdk.models import (
 
 
 class StateManager:
-    """Manage device state from MQTT messages."""
+    """Handter einingsstatus frå MQTT-meldingar."""
 
     def __init__(self, device: Device) -> None:
         self._device = device
@@ -21,27 +23,27 @@ class StateManager:
         self.event_callback = DataEvent()
         self.cloud_on_notification_callback = DataEvent()
 
-        self._last_attributes: DeviceAttributesMessage | None = None
-        self._last_state: DeviceStateMessage | None = None
-        self._last_event: DeviceEventMessage | None = None
+        self._last_attributes: Optional[DeviceAttributesMessage] = None
+        self._last_state: Optional[DeviceStateMessage] = None
+        self._last_event: Optional[DeviceEventMessage] = None
 
     @property
     def device(self) -> Device:
         return self._device
 
     @property
-    def last_attributes(self) -> DeviceAttributesMessage | None:
+    def last_attributes(self) -> Optional[DeviceAttributesMessage]:
         return self._last_attributes
 
     @property
-    def last_state(self) -> DeviceStateMessage | None:
+    def last_state(self) -> Optional[DeviceStateMessage]:
         return self._last_state
 
     @property
-    def last_event(self) -> DeviceEventMessage | None:
+    def last_event(self) -> Optional[DeviceEventMessage]:
         return self._last_event
 
-    def get_device_state(self) -> DeviceStateMessage | None:
+    def get_device_state(self) -> Optional[DeviceStateMessage]:
         return self._last_state
 
     async def attributes(self, event: DeviceAttributesMessage) -> None:
