@@ -6,9 +6,8 @@ Gjev eit samla klientgrensesnitt som samlar alle funksjonane.
 import asyncio
 from typing import Any, Callable, Optional
 
-import aiohttp
-
 from mower_sdk.api import MowerAPI
+from mower_sdk.http import HTTPSession
 from mower_sdk.models import Device, DeviceStatus, MowerCommand
 from mower_sdk.mqtt import MowerMQTT
 
@@ -25,7 +24,7 @@ class MowerClient:
 
     def __init__(
         self,
-        session: aiohttp.ClientSession,
+        session: HTTPSession,
         token: str,
         api_base_url: str = "",
         mqtt_broker: str = "",
@@ -37,7 +36,7 @@ class MowerClient:
         """Initialiser hovudklienten.
 
         Parametrar:
-            session: aiohttp-økt
+            session: Asynkron HTTP-økt
             token: Tilgangsteikn
             api_base_url: Grunn-URL for REST-API-et
             mqtt_broker: Adresse til MQTT-meglaren

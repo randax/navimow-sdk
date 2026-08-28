@@ -40,7 +40,6 @@ class FakePahoClient:
 
     def connect_async(self, broker, port, keepalive):
         self.connect_async_calls.append((broker, port, keepalive))
-        self.connected = True
 
     def connect(self, broker, port, keepalive):
         self.connect_calls.append((broker, port, keepalive))

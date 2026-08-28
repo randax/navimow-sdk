@@ -33,6 +33,7 @@ class _FakePahoClient:
         self.subscriptions = []
         self.unsubscriptions = []
         self.published = []
+        self.connect_async_calls = []
         self.on_connect = None
         self.on_disconnect = None
         self.on_message = None
@@ -58,7 +59,7 @@ class _FakePahoClient:
         return 0
 
     def connect_async(self, host, port, keepalive):
-        self.connected = True
+        self.connect_async_calls.append((host, port, keepalive))
         self.keepalive = keepalive
         return 0
 
@@ -180,14 +181,117 @@ class CompatibilityTests(unittest.TestCase):
         loop = asyncio.new_event_loop()
         try:
             sdk = sdk_module.NavimowSDK("broker.example", 1883, loop=loop)
+            sdk.connect()
+            original_client = sdk._mqtt.client
+            original_client.connected = False
 
             sdk.update_mqtt_credentials(username="updated-user")
 
             self.assertIs(sdk._mqtt.loop, loop)
-            self.assertTrue(sdk._mqtt.client.connected)
+            self.assertIsNot(sdk._mqtt.client, original_client)
+            self.assertEqual(len(sdk._mqtt.client.connect_async_calls), 1)
             self.assertTrue(sdk._mqtt.client.loop_started)
         finally:
             loop.close()
+
+    def test_credentials_update_after_explicit_disconnect_stays_disconnected(self):
+        loop = asyncio.new_event_loop()
+        try:
+            sdk = sdk_module.NavimowSDK("broker.example", 1883, loop=loop)
+            sdk.connect()
+            sdk.disconnect()
+            original_client = sdk._mqtt.client
+
+            sdk.update_mqtt_credentials(username="updated-user")
+
+            self.assertIsNot(sdk._mqtt.client, original_client)
+            self.assertEqual(sdk._mqtt.client.connect_async_calls, [])
+            self.assertFalse(sdk._mqtt.client.loop_started)
+        finally:
+            loop.close()
+
+    def test_credentials_update_with_supplied_loop_waits_for_first_connect(self):
+        loop = asyncio.new_event_loop()
+        try:
+            sdk = sdk_module.NavimowSDK("broker.example", 1883, loop=loop)
+
+            sdk.update_mqtt_credentials(username="updated-user")
+
+            self.assertEqual(sdk._mqtt.client.connect_async_calls, [])
+            self.assertFalse(sdk._mqtt.client.loop_started)
+
+            sdk.connect()
+
+            self.assertEqual(len(sdk._mqtt.client.connect_async_calls), 1)
+            self.assertTrue(sdk._mqtt.client.loop_started)
+        finally:
+            loop.close()
+
+    def test_repeated_connect_while_pending_starts_network_loop_once(self):
+        loop = asyncio.new_event_loop()
+        try:
+            sdk = sdk_module.NavimowSDK("broker.example", 1883, loop=loop)
+
+            sdk.connect()
+            sdk.connect()
+
+            self.assertEqual(len(sdk._mqtt.client.connect_async_calls), 1)
+            self.assertTrue(sdk._mqtt.client.loop_started)
+        finally:
+            loop.close()
+
+    def test_connected_credentials_update_live_client_for_next_reconnect(self):
+        loop = asyncio.new_event_loop()
+        try:
+            sdk = sdk_module.NavimowSDK(
+                "broker.example",
+                1883,
+                username="initial-user",
+                password="initial-password",
+                ws_path="/mqtt",
+                auth_headers={"Authorization": "Bearer initial-token"},
+                loop=loop,
+            )
+            sdk.connect()
+            client = sdk._mqtt.client
+            client.connected = True
+
+            sdk.update_mqtt_credentials(
+                username="updated-user",
+                password="updated-password",
+                auth_headers={"Authorization": "Bearer updated-token"},
+            )
+
+            self.assertIs(sdk._mqtt.client, client)
+            self.assertEqual(client.username, "updated-user")
+            self.assertEqual(client.password, "updated-password")
+            self.assertEqual(client.auth_headers, {"Authorization": "Bearer updated-token"})
+        finally:
+            loop.close()
+
+    def test_auth_header_formatting_redacts_every_value(self):
+        formatted = mqtt_module._format_auth_headers(
+            {
+                "Authorization": "Bearer example-token",
+                "Cookie": "session=example-cookie",
+                "X-Api-Key": "example-api-key",
+            }
+        )
+
+        self.assertIn("Authorization", formatted)
+        self.assertIn("Cookie", formatted)
+        self.assertIn("X-Api-Key", formatted)
+        self.assertNotIn("example-token", formatted)
+        self.assertNotIn("example-cookie", formatted)
+        self.assertNotIn("example-api-key", formatted)
+
+    def test_sync_command_preserves_not_connected_error_without_loop(self):
+        sdk = sdk_module.NavimowSDK("broker.example", 1883)
+
+        with self.assertRaisesRegex(RuntimeError, "^MQTT not connected$"):
+            sdk.start_mowing("device-1")
+
+        self.assertEqual(sdk._mqtt.client.connect_async_calls, [])
 
     def test_closed_loop_is_rejected_at_construction(self):
         loop = asyncio.new_event_loop()

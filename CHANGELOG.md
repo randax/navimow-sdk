@@ -8,8 +8,9 @@
   event-loop ownership to Python 3.14 behavior.
 - Add caller-provided loop support, permanent loop affinity, cross-loop guards,
   and thread-safe MQTT callback dispatch.
-- Move MQTT callbacks to Paho VERSION2 and constrain runtime dependencies to the
-  Python 3.9-compatible aiohttp release line.
+- Move MQTT callbacks to Paho VERSION2 and select the latest compatible aiohttp
+  release for Python 3.10+, while Python 3.9 uses the built-in standard-library
+  HTTP transport.
 - Add an offline compatibility suite and Python/ARM GitHub Actions matrices.
 - Translate maintained comments and docstrings to Nynorsk while preserving
   runtime messages and protocol values.

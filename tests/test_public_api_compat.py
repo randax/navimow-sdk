@@ -1,3 +1,5 @@
+import subprocess
+import sys
 import typing
 import unittest
 
@@ -10,6 +12,46 @@ class PublicApiCompatibilityTests(unittest.TestCase):
         self.assertIn("NavimowSDK", module.__all__)
         self.assertIn("NavimowMQTT", module.__all__)
         self.assertIn("MowerClient", module.__all__)
+        self.assertIn("UrllibSession", module.__all__)
+
+    def test_public_package_import_does_not_require_aiohttp(self):
+        script = """
+import builtins
+import sys
+import types
+from enum import Enum
+
+paho_module = types.ModuleType('paho')
+mqtt_module = types.ModuleType('paho.mqtt')
+client_module = types.ModuleType('paho.mqtt.client')
+class CallbackAPIVersion(Enum):
+    VERSION2 = 2
+client_module.CallbackAPIVersion = CallbackAPIVersion
+client_module.Client = type('Client', (), {})
+mqtt_module.client = client_module
+paho_module.mqtt = mqtt_module
+sys.modules['paho'] = paho_module
+sys.modules['paho.mqtt'] = mqtt_module
+sys.modules['paho.mqtt.client'] = client_module
+
+original_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    if name == 'aiohttp' or name.startswith('aiohttp.'):
+        raise AssertionError('mower_sdk imported aiohttp at runtime')
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = guarded_import
+import mower_sdk
+assert mower_sdk.__version__ == '0.2.0'
+"""
+
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_get_type_hints_resolves_public_constructor_annotations(self):
         targets = [

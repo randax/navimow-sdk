@@ -7,10 +7,18 @@ import asyncio
 import uuid
 from typing import Any, Optional, cast
 
-import aiohttp
-
 from mower_sdk.errors import ERROR_MESSAGES, MowerAPIError
+from mower_sdk.http import HTTPClientError, HTTPSession
 from mower_sdk.models import Device, DeviceStatus, MowerCommand
+
+
+def _is_transport_error(error: Exception) -> bool:
+    if isinstance(error, HTTPClientError):
+        return True
+    return any(
+        error_type.__name__ == "ClientError" and error_type.__module__.startswith("aiohttp.")
+        for error_type in type(error).__mro__
+    )
 
 
 class MowerAPI:
@@ -20,15 +28,15 @@ class MowerAPI:
 
     Eigenskapar:
         base_url: Grunn-URL for API-et (TODO: Konfigurer den verkelege API-grunn-URL-en)
-        session: aiohttp-økt (asynkron)
+        session: Asynkron HTTP-økt
         token: Tilgangsteikn
     """
 
-    def __init__(self, session: aiohttp.ClientSession, token: str, base_url: str):
+    def __init__(self, session: HTTPSession, token: str, base_url: str) -> None:
         """Initialiser API-klienten.
 
         Parametrar:
-            session: aiohttp-økt
+            session: Asynkron HTTP-økt
             token: Tilgangsteikn
             base_url: Grunn-URL for API-et
         """
@@ -88,7 +96,11 @@ class MowerAPI:
                     )
 
                 return cast(dict[str, Any], await response.json())
-        except aiohttp.ClientError as e:
+        except MowerAPIError:
+            raise
+        except Exception as e:
+            if not _is_transport_error(e):
+                raise
             raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {str(e)}") from e
 
     async def async_get_devices(self) -> list[Device]:
@@ -318,10 +330,3 @@ class MowerAPI:
     def query_command_results(self, devices: list[dict[str, str]]) -> list[dict[str, Any]]:
         """Hent resultata for kommandoar synkront."""
         return asyncio.run(self.async_query_command_results(devices))
-
-    def __del__(self):
-        """Rydd opp ressursane."""
-        if hasattr(self, "_session") and self._session and not self._session.closed:
-            # Merk: `await` kan ikkje brukast i `__del__`; her prøver vi berre å stengje.
-            # Ein betre praksis er å bruke ein kontekststyrar eller kalle `close` eksplisitt.
-            pass

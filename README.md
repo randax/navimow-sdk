@@ -26,10 +26,85 @@ More features are being added over time.
 
 ## Installation
 
-Install from PyPI:
+The distribution is named `navimow-sdk` on PyPI and is imported as `mower_sdk`
+in Python. Use standard, GIL-enabled CPython 3.9.2 through 3.14.x.
+
+### Recommended installation
+
+The SDK does not require a virtual environment, but one is recommended to keep
+its dependencies isolated from other Python applications:
 
 ```bash
-pip install navimow-sdk
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install navimow-sdk
+python -c "import mower_sdk; print(mower_sdk.__version__)"
+```
+
+On Windows PowerShell, activate the environment with
+`.venv\Scripts\Activate.ps1`. To upgrade an existing installation, run:
+
+```bash
+python -m pip install --upgrade navimow-sdk
+```
+
+### Install for your user without a virtual environment
+
+Install the SDK into the current user's Python package directory with:
+
+```bash
+python3 -m pip install --user --upgrade pip
+python3 -m pip install --user --upgrade navimow-sdk
+python3 -c "import mower_sdk; print(mower_sdk.__version__)"
+```
+
+This does not require root access and does not modify packages owned by other
+users. If Python reports that the environment is externally managed, use the
+recommended virtual-environment installation instead. For a dedicated Python
+installation or container, a plain `python3 -m pip install navimow-sdk` is also
+supported. Do not use `sudo pip`.
+
+### Raspberry Pi OS
+
+Raspberry Pi OS users may need to install virtual-environment support first:
+
+```bash
+sudo apt update
+sudo apt install python3-venv
+```
+
+Then use either the virtual-environment installation or the per-user
+`--user` installation above. Required runtime dependencies are installed
+automatically.
+
+#### Python 3.9 HTTP transport
+
+Current aiohttp security releases no longer support Python 3.9, so Python 3.9
+installations use the SDK's dependency-free `UrllibSession`. Python 3.10 and
+newer also install a patched aiohttp release for compatibility with existing
+applications that inject an `aiohttp.ClientSession`. Both session types satisfy
+the same SDK transport interface.
+
+### Install from source
+
+From a source checkout, install the current revision with:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install .
+```
+
+Without a virtual environment, install the source checkout for the current user
+with `python3 -m pip install --user .`.
+
+For development, include the formatting, type-checking, build, and test tools:
+
+```bash
+python -m pip install -e ".[dev]"
+python -m unittest discover -s tests -v
 ```
 
 ## Quick Example
@@ -37,13 +112,11 @@ pip install navimow-sdk
 ```python
 import asyncio
 
-import aiohttp
-
-from mower_sdk import MowerClient
+from mower_sdk import MowerClient, UrllibSession
 
 
 async def main() -> None:
-    async with aiohttp.ClientSession() as session:
+    async with UrllibSession() as session:
         client = MowerClient(
             session=session,
             token="your_access_token",

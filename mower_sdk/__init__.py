@@ -15,6 +15,7 @@ from mower_sdk.errors import (
     MowerMQTTError,
 )
 from mower_sdk.event import DataEvent
+from mower_sdk.http import HTTPClientError, UrllibSession
 from mower_sdk.models import (
     Device,
     DeviceAttributesMessage,
@@ -49,6 +50,7 @@ __all__ = [
     "NavimowCloudDevice",
     "StateManager",
     "DataEvent",
+    "UrllibSession",
     # Datamodellar
     "Device",
     "DeviceStateMessage",
@@ -66,6 +68,7 @@ __all__ = [
     "MowerAPIError",
     "MowerAuthError",
     "MowerMQTTError",
+    "HTTPClientError",
     "ERROR_MESSAGES",
     "COMMAND_ERRORS",
 ]

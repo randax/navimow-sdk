@@ -154,13 +154,17 @@ class NavimowSDK:
 
     def _publish_command(self, message: DeviceCommandMessage) -> None:
         if not self._mqtt.is_connected:
-            self._mqtt.connect_async()
+            connection_error = None
+            try:
+                self._mqtt.connect_async()
+            except RuntimeError as exc:
+                connection_error = exc
             _LOGGER.error(
                 "MQTT not connected, command not sent: %s for device %s",
                 message.command,
                 message.device_id,
             )
-            raise RuntimeError("MQTT not connected")
+            raise RuntimeError("MQTT not connected") from connection_error
         self._mqtt.publish_command(message.device_id, message.to_dict())
         _LOGGER.debug(
             "Published command %s for device %s",

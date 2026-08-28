@@ -34,13 +34,7 @@ def _mask_secret(value: Optional[str]) -> str:
 def _format_auth_headers(headers: Optional[dict[str, str]]) -> str:
     if not headers:
         return "<none>"
-    safe = {}
-    for key, val in headers.items():
-        if key.lower() == "authorization":
-            safe[key] = _mask_secret(val)
-        else:
-            safe[key] = val
-    return str(safe)
+    return str({key: "<redacted>" for key in headers})
 
 
 def _get_running_loop_if_available() -> Optional[asyncio.AbstractEventLoop]:
@@ -520,6 +514,8 @@ class NavimowMQTT:
         self.keepalive_seconds = max(30, int(keepalive_seconds))
         self.reconnect_min_delay = max(0, int(reconnect_min_delay))
         self.reconnect_max_delay = max(self.reconnect_min_delay, int(reconnect_max_delay))
+        self._connection_started = False
+        self._network_loop_started = False
 
         self.on_connected: Optional[Callable[[], Awaitable[None]]] = None
         self.on_ready: Optional[Callable[[], Awaitable[None]]] = None
@@ -532,10 +528,7 @@ class NavimowMQTT:
             client_id=self._client_id,
             transport=transport,
         )
-        if self.username and self.password:
-            self.client.username_pw_set(self.username, self.password)
-        if self.ws_path:
-            self.client.ws_set_options(path=self.ws_path, headers=self.auth_headers or {})
+        self._apply_credentials_to_client(self.client)
         if self._use_tls:
             self.client.tls_set()
         self.client.reconnect_delay_set(
@@ -580,10 +573,7 @@ class NavimowMQTT:
             client_id=self._client_id,
             transport=transport,
         )
-        if self.username and self.password:
-            client.username_pw_set(self.username, self.password)
-        if self.ws_path:
-            client.ws_set_options(path=self.ws_path, headers=self.auth_headers or {})
+        self._apply_credentials_to_client(client)
         if self._use_tls:
             client.tls_set()
         client.reconnect_delay_set(
@@ -593,6 +583,12 @@ class NavimowMQTT:
         client.on_disconnect = self._on_disconnect
         client.on_message = self._on_message
         return client
+
+    def _apply_credentials_to_client(self, client: mqtt_client.Client) -> None:
+        if self.username is not None:
+            client.username_pw_set(self.username, self.password)
+        if self.ws_path:
+            client.ws_set_options(path=self.ws_path, headers=self.auth_headers or {})
 
     def update_credentials(
         self,
@@ -616,6 +612,7 @@ class NavimowMQTT:
             return
 
         if self.client.is_connected():
+            self._apply_credentials_to_client(self.client)
             # Ei aktiv tilkopling held fram; nye legitimasjonar blir brukte ved neste attkopling.
             # Vi koplar ikkje frå ved tokenfornying; det hindrar attkopling og «eining utilgjengeleg».
             _LOGGER.info(
@@ -626,7 +623,7 @@ class NavimowMQTT:
             return
 
         # Bygg klienten opp att med ein gong, men vent med tilkoplinga til løkka er bunden.
-        reconnect = self.loop is not None
+        reconnect = self._connection_started
         if reconnect:
             _LOGGER.info(
                 "NavimowMQTT credentials updated while disconnected, rebuilding and reconnecting: broker=%s port=%s",
@@ -644,6 +641,7 @@ class NavimowMQTT:
             self.client.disconnect()
         except Exception:
             pass
+        self._network_loop_started = False
 
         self.client = self._build_new_client()
         if reconnect:
@@ -651,7 +649,7 @@ class NavimowMQTT:
 
     def connect_async(self) -> None:
         self._bind_loop()
-        if not self.is_connected:
+        if not self.is_connected and not self._network_loop_started:
             _LOGGER.info(
                 "NavimowMQTT connect details: transport=%s broker=%s port=%s ws_path=%s tls=%s username=%s auth_headers=%s",
                 "websockets" if self.ws_path else "tcp",
@@ -670,9 +668,13 @@ class NavimowMQTT:
             )
             self.client.connect_async(self.broker, self.port, self.keepalive_seconds)
             self.client.loop_start()
+            self._connection_started = True
+            self._network_loop_started = True
 
     def disconnect(self) -> None:
         self.client.loop_stop()
+        self._network_loop_started = False
+        self._connection_started = False
         self.client.disconnect()
         _LOGGER.info(
             "NavimowMQTT disconnect requested: broker=%s port=%s",
