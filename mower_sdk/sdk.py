@@ -90,7 +90,10 @@ class NavimowSDK:
         password: Optional[str] = None,
         auth_headers: Optional[dict[str, str]] = None,
     ) -> None:
-        """Oppdater MQTT-legitimasjonen og bygg klienten opp att ved behov."""
+        """Oppdater MQTT-legitimasjonen og bygg klienten opp att ved behov.
+
+        Vent med attkoplinga dersom inga hendingsløkke er bunden enno.
+        """
         self._mqtt.update_credentials(
             username=username,
             password=password,

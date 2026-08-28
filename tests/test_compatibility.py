@@ -158,6 +158,37 @@ class CompatibilityTests(unittest.TestCase):
         ):
             sdk.connect()
 
+    def test_credentials_update_before_loop_binding_does_not_connect(self):
+        sdk = sdk_module.NavimowSDK("broker.example", 1883)
+        original_client = sdk._mqtt.client
+
+        sdk.update_mqtt_credentials(
+            username="updated-user",
+            password="updated-password",
+            auth_headers={"Authorization": "Bearer updated-token"},
+        )
+
+        self.assertIsNone(sdk._loop)
+        self.assertIsNone(sdk._mqtt.loop)
+        self.assertIsNot(sdk._mqtt.client, original_client)
+        self.assertEqual(sdk._mqtt.client.username, "updated-user")
+        self.assertEqual(sdk._mqtt.client.password, "updated-password")
+        self.assertFalse(sdk._mqtt.client.connected)
+        self.assertFalse(sdk._mqtt.client.loop_started)
+
+    def test_disconnected_credentials_update_reconnects_when_loop_is_bound(self):
+        loop = asyncio.new_event_loop()
+        try:
+            sdk = sdk_module.NavimowSDK("broker.example", 1883, loop=loop)
+
+            sdk.update_mqtt_credentials(username="updated-user")
+
+            self.assertIs(sdk._mqtt.loop, loop)
+            self.assertTrue(sdk._mqtt.client.connected)
+            self.assertTrue(sdk._mqtt.client.loop_started)
+        finally:
+            loop.close()
+
     def test_closed_loop_is_rejected_at_construction(self):
         loop = asyncio.new_event_loop()
         loop.close()

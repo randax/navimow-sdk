@@ -625,12 +625,20 @@ class NavimowMQTT:
             )
             return
 
-        # Når tilkoplinga allereie er nede kan vi byggje klienten opp att med ein gong.
-        _LOGGER.info(
-            "NavimowMQTT credentials updated while disconnected, rebuilding and reconnecting: broker=%s port=%s",
-            self.broker,
-            self.port,
-        )
+        # Bygg klienten opp att med ein gong, men vent med tilkoplinga til løkka er bunden.
+        reconnect = self.loop is not None
+        if reconnect:
+            _LOGGER.info(
+                "NavimowMQTT credentials updated while disconnected, rebuilding and reconnecting: broker=%s port=%s",
+                self.broker,
+                self.port,
+            )
+        else:
+            _LOGGER.info(
+                "NavimowMQTT credentials updated before loop binding, rebuilding without reconnecting: broker=%s port=%s",
+                self.broker,
+                self.port,
+            )
         try:
             self.client.loop_stop()
             self.client.disconnect()
@@ -638,7 +646,8 @@ class NavimowMQTT:
             pass
 
         self.client = self._build_new_client()
-        self.connect_async()
+        if reconnect:
+            self.connect_async()
 
     def connect_async(self) -> None:
         self._bind_loop()
