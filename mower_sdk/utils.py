@@ -1,23 +1,23 @@
-"""工具函数模块。
+"""Modul med hjelpefunksjonar.
 
-提供 SDK 中使用的各种工具函数。
+Gjev ulike hjelpefunksjonar som SDK-en bruker.
 """
 
 import json
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, Union, cast
 
 
 def setup_logger(name: str = "mower_sdk", level: int = logging.INFO) -> logging.Logger:
-    """设置并返回日志记录器。
+    """Set opp og returner ein loggskrivar.
 
-    Args:
-        name: 日志记录器名称
-        level: 日志级别
+    Parametrar:
+        name: Namnet på loggskrivaren
+        level: Loggnivået
 
-    Returns:
-        配置好的日志记录器
+    Retur:
+        Den konfigurerte loggskrivaren
     """
     logger = logging.getLogger(name)
     logger.setLevel(level)
@@ -25,51 +25,49 @@ def setup_logger(name: str = "mower_sdk", level: int = logging.INFO) -> logging.
     if not logger.handlers:
         handler = logging.StreamHandler()
         handler.setLevel(level)
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 
     return logger
 
 
-def parse_json(data: str | bytes) -> dict[str, Any] | list[Any]:
-    """解析 JSON 字符串。
+def parse_json(data: Union[str, bytes]) -> Union[dict[str, Any], list[Any]]:
+    """Tolk JSON-streng.
 
-    Args:
-        data: JSON 字符串或字节
+    Parametrar:
+        data: JSON-streng eller byte
 
-    Returns:
-        解析后的字典或列表
+    Retur:
+        Den tolka ordboka eller lista
 
-    Raises:
-        ValueError: 如果 JSON 解析失败
+    Unntak:
+        ValueError: Dersom JSON-tolkinga feilar
     """
     if isinstance(data, bytes):
         data = data.decode("utf-8")
-    return json.loads(data)
+    return cast(Union[dict[str, Any], list[Any]], json.loads(data))
 
 
 def timestamp_to_datetime(timestamp: int) -> datetime:
-    """将时间戳转换为 datetime 对象。
+    """Gjer om eit tidsstempel til eit datetime-objekt.
 
-    Args:
-        timestamp: Unix 时间戳（秒）
+    Parametrar:
+        timestamp: Unix-tidsstempel i sekund
 
-    Returns:
-        datetime 对象
+    Retur:
+        Eit datetime-objekt
     """
     return datetime.fromtimestamp(timestamp)
 
 
 def datetime_to_timestamp(dt: datetime) -> int:
-    """将 datetime 对象转换为时间戳。
+    """Gjer om eit datetime-objekt til eit tidsstempel.
 
-    Args:
-        dt: datetime 对象
+    Parametrar:
+        dt: Eit datetime-objekt
 
-    Returns:
-        Unix 时间戳（秒）
+    Retur:
+        Unix-tidsstempel i sekund
     """
     return int(dt.timestamp())

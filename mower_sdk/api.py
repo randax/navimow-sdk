@@ -1,47 +1,55 @@
-"""REST API 客户端模块。
+"""Modul for REST-API-klienten.
 
-提供与割草机平台 REST API 交互的功能。
+Gjev funksjonar for å snakke med REST-API-et til robotklipparplattforma.
 """
 
 import asyncio
 import uuid
-from typing import Any
+from typing import Any, Optional, cast
 
-import aiohttp
-
-from mower_sdk.errors import MowerAPIError, ERROR_MESSAGES
+from mower_sdk.errors import ERROR_MESSAGES, MowerAPIError
+from mower_sdk.http import HTTPClientError, HTTPSession
 from mower_sdk.models import Device, DeviceStatus, MowerCommand
 
 
+def _is_transport_error(error: Exception) -> bool:
+    if isinstance(error, HTTPClientError):
+        return True
+    return any(
+        error_type.__name__ == "ClientError" and error_type.__module__.startswith("aiohttp.")
+        for error_type in type(error).__mro__
+    )
+
+
 class MowerAPI:
-    """REST API 客户端。
+    """REST-API-klient.
 
-    提供与割草机平台 API 交互的同步和异步接口。
+    Gjev synkrone og asynkrone grensesnitt mot API-et til robotklipparplattforma.
 
-    Attributes:
-        base_url: API 基础 URL（TODO: 需要配置实际的 API 基础 URL）
-        session: aiohttp 会话（异步）
-        token: 访问令牌
+    Eigenskapar:
+        base_url: Grunn-URL for API-et (TODO: Konfigurer den verkelege API-grunn-URL-en)
+        session: Asynkron HTTP-økt
+        token: Tilgangsteikn
     """
 
-    def __init__(self, session: aiohttp.ClientSession, token: str, base_url: str):
-        """初始化 API 客户端。
+    def __init__(self, session: HTTPSession, token: str, base_url: str) -> None:
+        """Initialiser API-klienten.
 
-        Args:
-            session: aiohttp 会话
-            token: 访问令牌
-            base_url: API 基础 URL
+        Parametrar:
+            session: Asynkron HTTP-økt
+            token: Tilgangsteikn
+            base_url: Grunn-URL for API-et
         """
         self.base_url = base_url.rstrip("/")
         self._session = session
         self._token = token
 
     def set_token(self, token: str) -> None:
-        """更新访问令牌。"""
+        """Oppdater tilgangsteiknet."""
         self._token = token
 
     def _get_auth_headers(self) -> dict[str, str]:
-        """获取认证头。"""
+        """Hent autentiseringshovudet."""
         if not self._token:
             raise MowerAPIError(
                 ERROR_MESSAGES["TOKEN_EXPIRED"],
@@ -54,22 +62,22 @@ class MowerAPI:
         self,
         method: str,
         endpoint: str,
-        data: dict[str, Any] | None = None,
-        params: dict[str, Any] | None = None,
+        data: Optional[dict[str, Any]] = None,
+        params: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        """发送异步 HTTP 请求。
+        """Send ei asynkron HTTP-førespurnad.
 
-        Args:
-            method: HTTP 方法（GET, POST, PUT, DELETE）
-            endpoint: API 端点（相对路径）
-            data: 请求体数据（可选）
-            params: 查询参数（可选）
+        Parametrar:
+            method: HTTP-metode (GET, POST, PUT, DELETE)
+            endpoint: API-endepunkt (relativ sti)
+            data: Forespurnadsdata (valfri)
+            params: Spørjeparametrar (valfrie)
 
-        Returns:
-            响应 JSON 数据
+        Retur:
+            JSON-data frå svaret
 
-        Raises:
-            MowerAPIError: 如果请求失败
+        Unntak:
+            MowerAPIError: Dersom førespurnaden feilar
         """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = self._get_auth_headers()
@@ -87,74 +95,70 @@ class MowerAPI:
                         status_code=response.status,
                     )
 
-                return await response.json()
-        except aiohttp.ClientError as e:
-            raise MowerAPIError(
-                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {str(e)}"
-            ) from e
+                return cast(dict[str, Any], await response.json())
+        except MowerAPIError:
+            raise
+        except Exception as e:
+            if not _is_transport_error(e):
+                raise
+            raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {str(e)}") from e
 
     async def async_get_devices(self) -> list[Device]:
-        """异步获取设备列表。
+        """Hent einingslista asynkront.
 
-        Returns:
-            设备列表
+        Retur:
+            Einingslista
 
-        Raises:
-            MowerAPIError: 如果请求失败
+        Unntak:
+            MowerAPIError: Dersom førespurnaden feilar
         """
         response = await self._async_request("GET", "/openapi/smarthome/authList")
         if response.get("code") != 1:
-            raise MowerAPIError(
-                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}"
-            )
+            raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}")
         payload = response.get("data", {}).get("payload", {})
         devices_data = payload.get("devices", [])
         return [Device.from_dict(device_data) for device_data in devices_data]
 
     async def async_get_mqtt_user_info(self) -> dict[str, Any]:
-        """异步获取 MQTT 连接信息。
+        """Hent MQTT-tilkoplingsinformasjon asynkront.
 
-        Returns:
-            MQTT 连接信息数据
+        Retur:
+            Data for MQTT-tilkoplingsinformasjon
 
-        Raises:
-            MowerAPIError: 如果请求失败
+        Unntak:
+            MowerAPIError: Dersom førespurnaden feilar
         """
         response = await self._async_request("GET", "/openapi/mqtt/userInfo/get/v2")
         if response.get("code") != 1:
-            raise MowerAPIError(
-                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}"
-            )
-        return response.get("data", {})
+            raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}")
+        return cast(dict[str, Any], response.get("data", {}))
 
     def get_devices(self) -> list[Device]:
-        """同步获取设备列表。
+        """Hent einingslista synkront.
 
-        Returns:
-            设备列表
+        Retur:
+            Einingslista
 
-        Raises:
-            MowerAPIError: 如果请求失败
+        Unntak:
+            MowerAPIError: Dersom førespurnaden feilar
         """
         return asyncio.run(self.async_get_devices())
 
     def get_mqtt_user_info(self) -> dict[str, Any]:
-        """同步获取 MQTT 连接信息。"""
+        """Hent MQTT-tilkoplingsinformasjon synkront."""
         return asyncio.run(self.async_get_mqtt_user_info())
 
-    async def async_get_device_statuses(
-        self, device_ids: list[str]
-    ) -> dict[str, DeviceStatus]:
-        """批量异步获取设备状态。
+    async def async_get_device_statuses(self, device_ids: list[str]) -> dict[str, DeviceStatus]:
+        """Hent einingsstatusar i batch asynkront.
 
-        Args:
-            device_ids: 设备 ID 列表
+        Parametrar:
+            device_ids: Liste over einings-ID-ar
 
-        Returns:
-            设备 ID 到状态的映射
+        Retur:
+            Kartlegging frå einings-ID til status
 
-        Raises:
-            MowerAPIError: 如果请求失败
+        Unntak:
+            MowerAPIError: Dersom førespurnaden feilar
         """
         if not device_ids:
             return {}
@@ -164,9 +168,7 @@ class MowerAPI:
             data={"devices": [{"id": device_id} for device_id in device_ids]},
         )
         if response.get("code") != 1:
-            raise MowerAPIError(
-                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}"
-            )
+            raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}")
         payload = response.get("data", {}).get("payload", {})
         devices_data = payload.get("devices", [])
         result: dict[str, DeviceStatus] = {}
@@ -177,16 +179,16 @@ class MowerAPI:
         return result
 
     async def async_get_device_status(self, device_id: str) -> DeviceStatus:
-        """异步获取设备状态。
+        """Hent einingsstatus asynkront.
 
-        Args:
-            device_id: 设备 ID
+        Parametrar:
+            device_id: Eining-ID
 
-        Returns:
-            设备状态
+        Retur:
+            Einingsstatus
 
-        Raises:
-            MowerAPIError: 如果请求失败或设备未找到
+        Unntak:
+            MowerAPIError: Dersom førespurnaden feilar eller eininga ikkje blir funnen
         """
         try:
             statuses = await self.async_get_device_statuses([device_id])
@@ -208,35 +210,33 @@ class MowerAPI:
             raise
 
     def get_device_status(self, device_id: str) -> DeviceStatus:
-        """同步获取设备状态。
+        """Hent einingsstatus synkront.
 
-        Args:
-            device_id: 设备 ID
+        Parametrar:
+            device_id: Eining-ID
 
-        Returns:
-            设备状态
+        Retur:
+            Einingsstatus
 
-        Raises:
-            MowerAPIError: 如果请求失败或设备未找到
+        Unntak:
+            MowerAPIError: Dersom førespurnaden feilar eller eininga ikkje blir funnen
         """
         return asyncio.run(self.async_get_device_status(device_id))
 
-    async def async_send_command(
-        self, device_id: str, command: MowerCommand
-    ) -> dict[str, Any]:
-        """异步发送控制指令。
+    async def async_send_command(self, device_id: str, command: MowerCommand) -> dict[str, Any]:
+        """Send ein kontrollkommando asynkront.
 
-        Args:
-            device_id: 设备 ID
-            command: 控制指令
+        Parametrar:
+            device_id: Eining-ID
+            command: Kontrollkommando
 
-        Returns:
-            指令执行结果
+        Retur:
+            Resultat av kommandoen
 
-        Raises:
-            MowerAPIError: 如果请求失败或指令执行失败
+        Unntak:
+            MowerAPIError: Dersom førespurnaden feilar eller kommandoen ikkje kan fullførast
         """
-        command_mapping: dict[MowerCommand, tuple[str, dict[str, Any] | None]] = {
+        command_mapping: dict[MowerCommand, tuple[str, Optional[dict[str, Any]]]] = {
             MowerCommand.START: (
                 "action.devices.commands.StartStop",
                 {"on": True},
@@ -268,60 +268,52 @@ class MowerAPI:
         response = await self._async_request(
             "POST",
             "/openapi/smarthome/sendCommands",
-            data={
-                "commands": [
-                    {"devices": [{"id": device_id}], "execution": execution}
-                ]
-            },
+            data={"commands": [{"devices": [{"id": device_id}], "execution": execution}]},
         )
         if response.get("code") != 1:
-            raise MowerAPIError(
-                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}"
-            )
+            raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}")
         payload = response.get("data", {}).get("payload", {})
         command_results = payload.get("commands", [])
         for result in command_results:
             if result.get("status") == "ERROR":
                 error_code = result.get("errorCode") or "COMMAND_FAILED"
-                # 设备已处于目标状态时视为成功，避免重复点击或状态不同步时报错
+                # Rekn som vellykka når eininga alt er i måltilstanden, så vi unngår dobbeltklikk eller feil ved statusdrift.
                 if error_code == "alreadyInState":
                     continue
                 raise MowerAPIError(
                     f"{ERROR_MESSAGES['COMMAND_FAILED']}: {error_code}",
                     error_code=error_code,
                 )
-        return response.get("data", {})
+        return cast(dict[str, Any], response.get("data", {}))
 
-    def send_command(
-        self, device_id: str, command: MowerCommand
-    ) -> dict[str, Any]:
-        """同步发送控制指令。
+    def send_command(self, device_id: str, command: MowerCommand) -> dict[str, Any]:
+        """Send ein kontrollkommando synkront.
 
-        Args:
-            device_id: 设备 ID
-            command: 控制指令
+        Parametrar:
+            device_id: Eining-ID
+            command: Kontrollkommando
 
-        Returns:
-            指令执行结果
+        Retur:
+            Resultat av kommandoen
 
-        Raises:
-            MowerAPIError: 如果请求失败或指令执行失败
+        Unntak:
+            MowerAPIError: Dersom førespurnaden feilar eller kommandoen ikkje kan fullførast
         """
         return asyncio.run(self.async_send_command(device_id, command))
 
     async def async_query_command_results(
         self, devices: list[dict[str, str]]
     ) -> list[dict[str, Any]]:
-        """异步查询指令执行结果。
+        """Hent resultata for kommandoar asynkront.
 
-        Args:
-            devices: 指令设备列表，包含 id 与 cmdNum
+        Parametrar:
+            devices: Liste over einingar for kommandoar, med id og cmdNum
 
-        Returns:
-            指令执行结果列表
+        Retur:
+            Liste over kommandosvar
 
-        Raises:
-            MowerAPIError: 如果请求失败
+        Unntak:
+            MowerAPIError: Dersom førespurnaden feilar
         """
         if not devices:
             return []
@@ -331,19 +323,10 @@ class MowerAPI:
             data={"devices": devices},
         )
         if response.get("code") != 1:
-            raise MowerAPIError(
-                f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}"
-            )
+            raise MowerAPIError(f"{ERROR_MESSAGES['API_REQUEST_FAILED']}: {response.get('desc')}")
         payload = response.get("data", {}).get("payload", {})
-        return payload.get("devices", [])
+        return cast(list[dict[str, Any]], payload.get("devices", []))
 
     def query_command_results(self, devices: list[dict[str, str]]) -> list[dict[str, Any]]:
-        """同步查询指令执行结果。"""
+        """Hent resultata for kommandoar synkront."""
         return asyncio.run(self.async_query_command_results(devices))
-
-    def __del__(self):
-        """清理资源。"""
-        if hasattr(self, "_session") and self._session and not self._session.closed:
-            # 注意：在 __del__ 中不能使用 await，这里只是尝试关闭
-            # 更好的做法是使用上下文管理器或显式调用 close 方法
-            pass

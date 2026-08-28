@@ -1,23 +1,23 @@
-"""Event helpers for async callbacks."""
+"""Hjelparar for asynkrone tilbakekall."""
 
 from __future__ import annotations
 
 import asyncio
+import weakref
 from collections.abc import Callable
 from types import MethodType
-from typing import Any
-import weakref
+from typing import Any, Optional
 
 
 class Event:
-    """Async event with weak-referenced subscribers."""
+    """Asynkron hending med svake referansar til abonnentar."""
 
     def __init__(self) -> None:
-        self._handlers: list[weakref.ReferenceType] = []
+        self._handlers: list[weakref.ReferenceType[Any]] = []
 
     def __iadd__(self, handler: Callable[..., Any]) -> "Event":
         if isinstance(handler, MethodType):
-            ref = weakref.WeakMethod(handler)
+            ref: weakref.ReferenceType[Any] = weakref.WeakMethod(handler)
         else:
             ref = weakref.ref(handler)
         self._handlers.append(ref)
@@ -40,24 +40,24 @@ class Event:
 
 
 class DataEvent:
-    """Data event helper with async dispatch."""
+    """Datahending med asynkron utsending."""
 
     def __init__(self) -> None:
         self.on_data_event = Event()
 
-    async def data_event(self, data: Any | None = None) -> None:
-        """Execute the data event callbacks."""
+    async def data_event(self, data: Optional[Any] = None) -> None:
+        """Køyr tilbakekalla for datahendinga."""
         if data is None:
             await self.on_data_event()
         else:
             await self.on_data_event(data)
 
     def add_subscribers(self, obj_method: Callable[..., Any]) -> None:
-        """Add subscribers."""
+        """Legg til abonnentar."""
         self.on_data_event += obj_method
 
     def remove_subscribers(self, obj_method: Callable[..., Any]) -> None:
-        """Remove subscribers."""
+        """Fjern abonnentar."""
         try:
             self.on_data_event -= obj_method
         except ValueError:

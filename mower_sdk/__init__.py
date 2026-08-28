@@ -1,20 +1,21 @@
-"""割草机平台 Python SDK。
+"""Python SDK for ei skybasert plattform for robotklipparar.
 
-提供与云端割草机平台交互的功能，包括 REST API 和 MQTT 支持。
+Gjev funksjonar for å snakke med plattforma, inkludert REST-API- og MQTT-støtte.
 """
 
 from mower_sdk.api import MowerAPI
 from mower_sdk.client import MowerClient
 from mower_sdk.cloud import NavimowCloud
 from mower_sdk.device import NavimowCloudDevice
-from mower_sdk.event import DataEvent
 from mower_sdk.errors import (
+    COMMAND_ERRORS,
+    ERROR_MESSAGES,
     MowerAPIError,
     MowerAuthError,
     MowerMQTTError,
-    ERROR_MESSAGES,
-    COMMAND_ERRORS,
 )
+from mower_sdk.event import DataEvent
+from mower_sdk.http import HTTPClientError, UrllibSession
 from mower_sdk.models import (
     Device,
     DeviceAttributesMessage,
@@ -34,14 +35,14 @@ from mower_sdk.navimow import Navimow
 from mower_sdk.sdk import NavimowSDK
 from mower_sdk.state_manager import StateManager
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
-    # 主客户端
+    # Hovudklient
     "MowerClient",
     "Navimow",
     "NavimowSDK",
-    # 子模块
+    # Delmodular
     "MowerAPI",
     "MowerMQTT",
     "NavimowMQTT",
@@ -49,7 +50,8 @@ __all__ = [
     "NavimowCloudDevice",
     "StateManager",
     "DataEvent",
-    # 数据模型
+    "UrllibSession",
+    # Datamodellar
     "Device",
     "DeviceStateMessage",
     "DeviceEventMessage",
@@ -62,9 +64,11 @@ __all__ = [
     "ThingStatusMessage",
     "ThingPropertiesMessage",
     "ThingEventMessage",
-    # 异常
+    # Unntak
     "MowerAPIError",
+    "MowerAuthError",
     "MowerMQTTError",
+    "HTTPClientError",
     "ERROR_MESSAGES",
     "COMMAND_ERRORS",
 ]
