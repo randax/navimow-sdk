@@ -371,6 +371,9 @@ class MowerMQTT:
                 # paho-trådar leverer samstundes.
                 points = self._location_filter.filter(parse_location_payload(payload, device_id))
                 for point in points:
+                    # Mellomlageret held siste lesing MED koordinatar, uavhengig av `type`:
+                    # vokabularet for `type` er ikkje kjent, så koordinatane er det einaste
+                    # trygge kriteriet.
                     if point.x is not None and point.y is not None:
                         self.location_cache[device_id] = point
             if callback:

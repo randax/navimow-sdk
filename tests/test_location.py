@@ -500,6 +500,49 @@ class MowerMQTTAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("position", mqtt.get_cached_location(DEVICE_ID).type)
 
 
+# Standardverdiane til dei gamle parametrane (frå main); ei endring her bryt drop-in-kompatibilitet.
+LEGACY_DEFAULTS = {
+    ("NavimowSDK", "__init__"): {
+        "username": None,
+        "password": None,
+        "ws_path": None,
+        "auth_headers": None,
+        "loop": None,
+        "records": None,
+        "keepalive_seconds": 2400,
+        "reconnect_min_delay": 1,
+        "reconnect_max_delay": 60,
+    },
+    ("NavimowMQTT", "__init__"): {
+        "ws_path": None,
+        "auth_headers": None,
+        "loop": None,
+        "keepalive_seconds": 2400,
+        "reconnect_min_delay": 1,
+        "reconnect_max_delay": 60,
+    },
+    ("MowerMQTT", "__init__"): {
+        "port": 1883,
+        "username": None,
+        "password": None,
+        "ws_path": None,
+        "auth_headers": None,
+        "keepalive_seconds": 2400,
+        "reconnect_min_delay": 1,
+        "reconnect_max_delay": 60,
+        "loop": None,
+    },
+    ("MowerClient", "__init__"): {
+        "api_base_url": "",
+        "mqtt_broker": "",
+        "mqtt_port": 1883,
+        "mqtt_username": None,
+        "mqtt_password": None,
+        "loop": None,
+    },
+}
+
+
 class ReviewRegressionTests(unittest.TestCase):
     """Regresjonsvern for funn frå den motstridande gjennomgangen."""
 
@@ -716,6 +759,13 @@ class ReviewRegressionTests(unittest.TestCase):
             for param in params[: len(prefix)]:
                 self.assertEqual(
                     inspect.Parameter.POSITIONAL_OR_KEYWORD, param.kind, f"{cls.__name__}.{name}"
+                )
+            legacy_defaults = LEGACY_DEFAULTS.get((cls.__name__, name))
+            if legacy_defaults is not None:
+                self.assertEqual(
+                    legacy_defaults,
+                    {p.name: p.default for p in params[: len(prefix)] if p.default is not p.empty},
+                    f"{cls.__name__}.{name} defaults",
                 )
             # Alt som er lagt til etter det gamle prefikset må ha standardverdi.
             for param in params[len(prefix) :]:
