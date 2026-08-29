@@ -98,7 +98,7 @@ class LoopBindingTests(unittest.TestCase):
         async def callback():
             return None
 
-        mqtt._schedule(callback())
+        mqtt._schedule_call(callback)
         self.assertEqual([], loop.calls)
 
     def test_navimow_mqtt_schedules_callbacks_threadsafely_on_bound_loop(self):

@@ -1452,12 +1452,13 @@ class ReviewRegressionTests(unittest.TestCase):
             self.assertIsNot(c1, c2)
             self.assertEqual(("u2", "p2"), c2.username_password)
             self.assertEqual(1, c1.disconnect_calls)
-            done, _ = await asyncio.wait({a}, timeout=0.5)
-            self.assertEqual({a}, done)  # A vart vekt: økta hans er over
+            await asyncio.sleep(0)
+            self.assertFalse(a.done())  # A vart med i den nye økta i staden for å returnere
             c2.on_connect(c2, None, None, 0)
+            self.assertIn("/downlink/vehicle/A/realtimeDate/state", c2.subscriptions)
             self.assertIn("/downlink/vehicle/B/realtimeDate/state", c2.subscriptions)
-            mqtt._async_stop_event.set()
-            await b
+            c2.on_disconnect(c2, None, None, 0)
+            await asyncio.wait_for(asyncio.gather(a, b), timeout=1)
 
         loop.run_until_complete(scenario())
 
@@ -1485,21 +1486,22 @@ class ReviewRegressionTests(unittest.TestCase):
             b.cancel()  # avbrote medan nedrivinga står i kø i utføraren, inne i låsen
             with self.assertRaises(asyncio.CancelledError):
                 await b
-            done, _ = await asyncio.wait({a}, timeout=0.5)
-            self.assertEqual({a}, done)  # A vart vekt, ikkje etterlaten
             await blocker
             await asyncio.sleep(0.05)
+            # A vart vekt (økta var bytt ut), vart ikkje etterlaten, og starta sjølv ei ny økt
+            self.assertFalse(a.done())
+            self.assertEqual(1, c1.disconnect_calls)
+            self.assertEqual(["A"], list(mqtt._callbacks))
+            self.assertEqual(1, mqtt._async_waiters)
+            c2 = mqtt._async_client
+            self.assertIsNotNone(c2)
+            c2.on_connect(c2, None, None, 0)
+            self.assertIn("/downlink/vehicle/A/realtimeDate/state", c2.subscriptions)
+            await mqtt.async_disconnect()
+            await asyncio.wait_for(a, timeout=1)
             self.assertEqual(0, mqtt._async_waiters)
             self.assertEqual({}, mqtt._callbacks)
-            self.assertEqual(1, c1.disconnect_calls)
-            # og ei ny økt kan framleis startast og rivast ned korrekt
-            c = asyncio.ensure_future(mqtt.async_subscribe_device("C"))
-            await asyncio.sleep(0)
-            c3 = mqtt._async_client
-            c3.on_connect(c3, None, None, 0)
-            await mqtt.async_disconnect()
-            await c
-            self.assertEqual(1, c3.loop_stop_calls)
+            self.assertEqual(1, c2.loop_stop_calls)
 
         loop.run_until_complete(scenario())
 
@@ -1616,3 +1618,61 @@ class ReviewRegressionTests(unittest.TestCase):
             self.assertEqual({}, mqtt._callbacks)
 
         asyncio.run(scenario())
+
+    def test_credential_rotation_keeps_all_participants_subscribed(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, username="u1", password="p1", loop=loop)
+        cb_a = mock.Mock()
+
+        async def scenario():
+            a = asyncio.ensure_future(mqtt.async_subscribe_device("A", on_status_update=cb_a))
+            b = asyncio.ensure_future(mqtt.async_subscribe_device("B"))
+            await asyncio.sleep(0)
+            c1 = mqtt._async_client
+            c1.on_connect(c1, None, None, 0)
+            # Fasaden friskar opp legitimasjonen før kvart kall: ny signatur → ny økt
+            mqtt.configure_wss("broker", "/mqtt", "u2", "p2", {"Authorization": "Bearer T2"})
+            c = asyncio.ensure_future(mqtt.async_subscribe_device("C"))
+            await asyncio.sleep(0.05)
+            c2 = mqtt._async_client
+            self.assertIsNot(c1, c2)
+            c2.on_connect(c2, None, None, 0)
+            await asyncio.sleep(0)
+            # A og B har ikkje returnert: dei vart med i den nye økta
+            self.assertFalse(a.done())
+            self.assertFalse(b.done())
+            for dev in "ABC":
+                self.assertIn(f"/downlink/vehicle/{dev}/realtimeDate/state", c2.subscriptions)
+            self.assertEqual(3, mqtt._async_waiters)
+            c2.on_message(
+                c2, None, _make_message(mqtt._get_status_topic("A"), {"state": "isRunning"})
+            )
+            await asyncio.sleep(0)
+            self.assertEqual(1, cb_a.call_count)
+            # Ei verkeleg broten tilkopling avsluttar alle kalla
+            c2.on_disconnect(c2, None, None, 0)
+            await asyncio.wait_for(asyncio.gather(a, b, c), timeout=1)
+            self.assertEqual({}, mqtt._callbacks)
+            self.assertEqual(0, mqtt._async_waiters)
+
+        loop.run_until_complete(scenario())
+
+    def test_sync_subscribe_failure_forgets_callbacks(self):
+        mqtt, client = self._connected_mqtt()
+        client.subscribe = mock.Mock(side_effect=ValueError("refused"))
+        with self.assertRaises(self.mqtt_module.MowerMQTTError):
+            mqtt.subscribe_device("A", on_status_update=mock.Mock())
+        self.assertNotIn("A", mqtt._callbacks)
+
+    def test_navimow_sdk_caches_are_keyed_by_topic_device_id(self):
+        sdk = self.sdk_module.NavimowSDK("broker", 1883)
+        asyncio.run(
+            sdk._on_mqtt_message(
+                f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/state",
+                b'{"device_id": "other", "state": "isRunning"}',
+                DEVICE_ID,
+            )
+        )
+        self.assertIsNotNone(sdk.get_cached_state(DEVICE_ID))
+        self.assertIsNone(sdk.get_cached_state("other"))

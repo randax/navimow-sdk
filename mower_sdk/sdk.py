@@ -192,7 +192,7 @@ class NavimowSDK:
 
         if channel == "state":
             state_message = DeviceStateMessage.from_dict(payload_dict)
-            cached = self._state_cache.get(state_message.device_id)
+            cached = self._state_cache.get(device_id)
             if cached is not None:
                 # Tilstandskanalen sender delvise meldingar; hald på siste kjende verdiar.
                 if extract_battery_value_or_none(payload_dict) is None:
@@ -201,7 +201,7 @@ class NavimowSDK:
                     state_source(payload_dict)
                 ):
                     state_message.state = cached.state
-            self._state_cache[state_message.device_id] = state_message
+            self._state_cache[device_id] = state_message
             self._dispatch(self._state_callbacks, state_message, "State")
             return
         if channel == "event":
@@ -210,7 +210,7 @@ class NavimowSDK:
             return
         if channel == "attributes":
             attributes_message = DeviceAttributesMessage.from_dict(payload_dict)
-            self._attributes_cache[attributes_message.device_id] = attributes_message
+            self._attributes_cache[device_id] = attributes_message
             self._dispatch(self._attributes_callbacks, attributes_message, "Attributes")
 
     def _publish_command(self, message: DeviceCommandMessage) -> None:

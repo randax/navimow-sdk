@@ -34,14 +34,20 @@ eingongsskript.
 `DeviceLocationMessage`; meldingar med stilleståande nullposisjon eller eldre
 tidsstempel for same lesingstype blir filtrerte bort.
 
-```python
-await client.async_subscribe_device_updates(
-    device_id,
-    callback=handle_status,
-    on_location=handle_location,
-    subscribe_location=True,
-)
+`async_subscribe_device_updates()` køyrer til tilkoplinga blir broten (fleire
+einingar kan dele éi tilkopling ved å køyre kalla samstundes, t.d. med
+`asyncio.gather`), så start det som ei oppgåve:
 
+```python
+watcher = asyncio.create_task(
+    client.async_subscribe_device_updates(
+        device_id,
+        callback=handle_status,
+        on_location=handle_location,
+        subscribe_location=True,
+    )
+)
+...
 location = client.get_cached_location(device_id)  # DeviceLocationMessage | None
 ```
 
