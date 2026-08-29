@@ -881,3 +881,63 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertEqual("mowing", cached.state)
         asyncio.run(sdk._on_mqtt_message(topic, b'{"state": "offline"}', DEVICE_ID))
         self.assertEqual("unknown", sdk.get_cached_state(DEVICE_ID).state)
+
+    def test_concurrent_async_subscriptions_share_one_client(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+        cb_a, cb_b = mock.Mock(), mock.Mock()
+
+        async def scenario():
+            await mqtt.async_connect()
+            t1 = asyncio.ensure_future(mqtt.async_subscribe_device("A", on_status_update=cb_a))
+            await asyncio.sleep(0)
+            client = mqtt._async_client
+            client.on_connect(client, None, None, 0)
+            t2 = asyncio.ensure_future(mqtt.async_subscribe_device("B", on_status_update=cb_b))
+            await asyncio.sleep(0)
+            self.assertIs(client, mqtt._async_client)
+            client.on_message(
+                client, None, _make_message(mqtt._get_status_topic("A"), {"state": "isRunning"})
+            )
+            await asyncio.sleep(0)
+            self.assertEqual(1, cb_a.call_count)
+            self.assertEqual(0, cb_b.call_count)
+            self.assertIn("/downlink/vehicle/B/realtimeDate/state", client.subscriptions)
+            mqtt._async_stop_event.set()
+            await asyncio.gather(t1, t2)
+
+        loop.run_until_complete(scenario())
+
+    def test_connect_rebuilds_client_when_credentials_change(self):
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, username="u1", password="p1")
+        mqtt.connect()
+        first = mqtt._sync_client
+        mqtt.connect()
+        self.assertIs(first, mqtt._sync_client)  # uendra oppsett: attbruk
+        mqtt.configure_wss("broker", "/mqtt", "u2", "p2", {"Authorization": "Bearer T2"})
+        mqtt.connect()
+        self.assertIsNot(first, mqtt._sync_client)
+        self.assertEqual(("u2", "p2"), mqtt._sync_client.username_password)
+
+    def test_state_event_attribute_callbacks_are_isolated(self):
+        import logging
+
+        logging.getLogger("mower_sdk.sdk").disabled = True
+        self.addCleanup(setattr, logging.getLogger("mower_sdk.sdk"), "disabled", False)
+        sdk = self.sdk_module.NavimowSDK("broker", 1883)
+        seen = []
+        for register in (sdk.on_state, sdk.on_event, sdk.on_attributes):
+            register(lambda _m: 1 / 0)
+            register(seen.append)
+        for channel, body in (
+            ("state", b'{"state": "isRunning"}'),
+            ("event", b'{"event": "x"}'),
+            ("attributes", b'{"attributes": {}}'),
+        ):
+            asyncio.run(
+                sdk._on_mqtt_message(
+                    f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/{channel}", body, DEVICE_ID
+                )
+            )
+        self.assertEqual(3, len(seen))

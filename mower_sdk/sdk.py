@@ -16,10 +16,10 @@ from mower_sdk.models import (
     DeviceLocationMessage,
     DeviceStateMessage,
     LocationFilter,
-    _extract_battery_value_or_none,
-    _is_recognised_state,
-    _state_source,
+    extract_battery_value_or_none,
+    is_recognised_state,
     parse_location_payload,
+    state_source,
 )
 from mower_sdk.mqtt import NavimowMQTT
 
@@ -141,6 +141,17 @@ class NavimowSDK:
     def get_cached_location(self, device_id: str) -> Optional[DeviceLocationMessage]:
         return self._location_cache.get(device_id)
 
+    @staticmethod
+    def _dispatch(callbacks: list[Callable[[Any], None]], message: Any, label: str) -> None:
+        """Kall kvart tilbakekall; eitt som feilar skal ikkje stoppe dei andre."""
+        for callback in list(callbacks):
+            try:
+                callback(message)
+            except Exception:
+                _LOGGER.exception(
+                    "%s callback failed for %s", label, getattr(message, "device_id", "?")
+                )
+
     async def _on_mqtt_raw(self, topic: str, payload: bytes) -> None:
         for raw_callback in list(self._raw_callbacks):
             try:
@@ -171,11 +182,7 @@ class NavimowSDK:
                 if location_message.x is not None and location_message.y is not None:
                     # Framdriftspunkt utan koordinatar skal ikkje overskrive siste posisjon.
                     self._location_cache[device_id] = location_message
-                for location_callback in list(self._location_callbacks):
-                    try:
-                        location_callback(location_message)
-                    except Exception:  # eit feilande tilbakekall skal ikkje stoppe resten
-                        _LOGGER.exception("Location callback failed for %s", device_id)
+                self._dispatch(self._location_callbacks, location_message, "Location")
             return
 
         if not isinstance(payload_dict, dict):
@@ -188,26 +195,23 @@ class NavimowSDK:
             cached = self._state_cache.get(state_message.device_id)
             if cached is not None:
                 # Tilstandskanalen sender delvise meldingar; hald på siste kjende verdiar.
-                if _extract_battery_value_or_none(payload_dict) is None:
+                if extract_battery_value_or_none(payload_dict) is None:
                     state_message.battery = cached.battery
-                if state_message.state == "unknown" and not _is_recognised_state(
-                    _state_source(payload_dict)
+                if state_message.state == "unknown" and not is_recognised_state(
+                    state_source(payload_dict)
                 ):
                     state_message.state = cached.state
             self._state_cache[state_message.device_id] = state_message
-            for state_callback in list(self._state_callbacks):
-                state_callback(state_message)
+            self._dispatch(self._state_callbacks, state_message, "State")
             return
         if channel == "event":
             event_message = DeviceEventMessage.from_dict(payload_dict)
-            for event_callback in list(self._event_callbacks):
-                event_callback(event_message)
+            self._dispatch(self._event_callbacks, event_message, "Event")
             return
         if channel == "attributes":
             attributes_message = DeviceAttributesMessage.from_dict(payload_dict)
             self._attributes_cache[attributes_message.device_id] = attributes_message
-            for attributes_callback in list(self._attributes_callbacks):
-                attributes_callback(attributes_message)
+            self._dispatch(self._attributes_callbacks, attributes_message, "Attributes")
 
     def _publish_command(self, message: DeviceCommandMessage) -> None:
         if not self._mqtt.is_connected:

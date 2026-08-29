@@ -193,6 +193,7 @@ class MowerMQTT:
         self.extra_topics = _validate_topics(extra_topics)
         self._location_filter = LocationFilter()
         self._location_pass_done = False
+        self._sync_signature: Optional[tuple[Any, ...]] = None
         self.on_raw: Optional[Callable[[str, bytes], None]] = None
         self._async_client: Optional[mqtt_client.Client] = None
         self._sync_client: Optional[mqtt_client.Client] = None
@@ -379,11 +380,25 @@ class MowerMQTT:
         except Exception as e:
             raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_CONNECTION_FAILED']}: {str(e)}") from e
 
+    def _connection_signature(self) -> tuple[Any, ...]:
+        """Alt som avgjer korleis paho-klienten blir bygd; endring krev ny klient."""
+        headers = tuple(sorted((self.auth_headers or {}).items()))
+        return (self.broker, self.port, self.ws_path, self.username, self.password, headers)
+
     def connect(self) -> None:
-        """Kople til MQTT-broker synkront. Idempotent: ein alt bygd klient blir attbrukt."""
+        """Kople til MQTT-broker synkront.
+
+        Idempotent: ein alt bygd klient blir attbrukt så lenge tilkoplingsoppsettet er
+        uendra. Er legitimasjon/vert oppdaterte (t.d. via `configure_wss`), blir den gamle
+        klienten stoppa og ein ny bygd; `on_connect` teiknar opp att alle abonnement.
+        """
         if self._sync_client is not None:
-            return
+            if self._sync_signature == self._connection_signature():
+                return
+            _LOGGER.info("MQTT connection settings changed; rebuilding sync client")
+            self.disconnect()
         try:
+            self._sync_signature = self._connection_signature()
             self._sync_client = self._build_client()
             _LOGGER.info(
                 "MQTT connect details (sync): transport=%s broker=%s port=%s ws_path=%s tls=%s username=%s auth_headers=%s",
@@ -435,8 +450,10 @@ class MowerMQTT:
     ) -> None:
         """Abonner asynkront på status og hendingar for ei eining.
 
-        Kvart kall byggjer sin eigen MQTT-klient og ventar til tilkoplinga blir broten;
-        bruk eitt kall per eining, eller den synkrone stien for fleire einingar på éin klient.
+        Første kall byggjer MQTT-klienten; seinare kall (t.d. via `asyncio.gather` for
+        fleire einingar) deler same klient. Kvart kall ventar til tilkoplinga blir broten.
+        Å slå `subscribe_location` av att fjernar ikkje alt teikna posisjonsemne før neste
+        attkopling.
         """
         # Ta vare på tilbakekall for denne eininga (før abonnementet, så ingen melding går tapt).
         self._callbacks[device_id] = {
@@ -451,6 +468,18 @@ class MowerMQTT:
             missing_message="MowerMQTT.async_subscribe_device() requires a running event loop or an explicit loop= argument",
         )
         loop = self._loop
+        if self._async_client is not None and self._async_stop_event is not None:
+            # Alt ein aktiv asynkron klient: del han. Abonner den nye eininga no om vi er
+            # tilkopla (elles tek on_connect det), og vent på same stopp-hending.
+            if self._connected:
+                try:
+                    self._subscribe_topics(self._async_client, [device_id])
+                except Exception as e:
+                    raise MowerMQTTError(
+                        f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}"
+                    ) from e
+            await self._async_stop_event.wait()
+            return
         self._async_stop_event = asyncio.Event()
         try:
             self._async_client = self._build_client()
@@ -586,7 +615,7 @@ class MowerMQTT:
             self._sync_client.disconnect()
             # Ein stoppa paho-klient er død; fjern han så neste connect() byggjer ein ny.
             self._sync_client = None
-            self._connected = False
+        self._connected = False
 
 
 class NavimowMQTT:

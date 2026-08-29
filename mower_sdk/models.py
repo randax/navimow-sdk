@@ -29,12 +29,12 @@ _RAW_STATE_TO_CANONICAL: dict[str, str] = {
 }
 
 
-def _state_source(data: dict[str, Any]) -> Any:
+def state_source(data: dict[str, Any]) -> Any:
     """Den eine staden som avgjer kva nøkkel tilstanden blir lesen frå."""
     return data.get("state") or data.get("status") or data.get("vehicleState")
 
 
-def _is_recognised_state(raw_state: Any) -> bool:
+def is_recognised_state(raw_state: Any) -> bool:
     """Sei om råverdien er ein tilstand vi kjenner (kanonisk eller via oppslagstabellen)."""
     if isinstance(raw_state, MowerStatus):
         return True
@@ -55,11 +55,11 @@ def _normalize_state_value(raw_state: Any) -> str:
 
 def _extract_battery_value(data: dict[str, Any]) -> int:
     """Hent batteriprosent frå fleire ulike lastformat (0 når det ikkje finst)."""
-    value = _extract_battery_value_or_none(data)
+    value = extract_battery_value_or_none(data)
     return 0 if value is None else value
 
 
-def _extract_battery_value_or_none(data: dict[str, Any]) -> Optional[int]:
+def extract_battery_value_or_none(data: dict[str, Any]) -> Optional[int]:
     """Hent batteriprosent, eller None når lasta ikkje ber ein brukbar verdi."""
 
     def _to_int_or_none(value: Any) -> Optional[int]:
@@ -333,7 +333,7 @@ class DeviceStatus:
         Retur:
             Ein DeviceStatus-instans
         """
-        status_source = _state_source(data)
+        status_source = state_source(data)
         normalized_state = _normalize_state_value(status_source)
         try:
             status = MowerStatus(normalized_state)
@@ -392,10 +392,10 @@ class DeviceStatus:
             # Fall berre tilbake når tilstanden manglar eller er ukjend for oss (t.d.
             # numerisk vehicleState). Ein eksplisitt kjend verdi som «offline» skal
             # sleppe gjennom som UNKNOWN, elles maskerer vi at klipparen forsvann.
-            raw_state = _state_source(raw)
-            if not _is_recognised_state(raw_state):
+            raw_state = state_source(raw)
+            if not is_recognised_state(raw_state):
                 status.status = fallback_status
-        if _extract_battery_value_or_none(raw) is None and fallback_battery is not None:
+        if extract_battery_value_or_none(raw) is None and fallback_battery is not None:
             status.battery = fallback_battery
         return status
 
@@ -444,7 +444,7 @@ class DeviceStateMessage:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceStateMessage":
-        raw_state = _state_source(payload)
+        raw_state = state_source(payload)
         normalized_state = _normalize_state_value(raw_state)
         metrics = dict(payload.get("metrics") or {})  # kopi: ikkje endre lasta til kallaren
         if raw_state is not None and normalized_state != raw_state:
