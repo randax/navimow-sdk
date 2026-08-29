@@ -117,8 +117,7 @@ A prebuilt wheel is attached to each
 python -m pip install https://github.com/randax/navimow-sdk/releases/download/v0.2.0/randax_navimow_sdk-0.2.0-py3-none-any.whl
 ```
 
-To build the wheel yourself (`.whl`) that can be copied to and installed on
-any machine with a supported Python, run from a source checkout:
+To build the wheel yourself, run from a source checkout:
 
 ```bash
 python3 -m venv .venv
@@ -136,6 +135,12 @@ python -m pip install dist/randax_navimow_sdk-*.whl
 ```
 
 Runtime dependencies are resolved from PyPI during installation.
+
+## Documentation
+
+Full guides — how the SDK works, REST and MQTT usage, data models, error
+handling, and Home Assistant / event-loop patterns — are in
+[`docs/`](docs/README.md). Runnable scripts are in [`examples/`](examples/).
 
 ## Quick Example
 
