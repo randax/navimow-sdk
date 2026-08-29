@@ -111,6 +111,18 @@ def _close_awaitable(awaitable: Awaitable[Any]) -> None:
         close()
 
 
+def _parse_realtime_topic(topic: str) -> Tuple[Optional[str], Optional[str]]:
+    """Tolk `/downlink/vehicle/{id}/realtimeDate/{kanal}` til (einings-ID, kanal)."""
+    parts = topic.split("/")
+    if parts and parts[0] == "":
+        parts = parts[1:]
+    if len(parts) != 5:
+        return None, None
+    if parts[0] != "downlink" or parts[1] != "vehicle" or parts[3] != "realtimeDate":
+        return None, None
+    return parts[2], parts[4]
+
+
 class MowerMQTT:
     """MQTT-klient.
 
@@ -241,17 +253,33 @@ class MowerMQTT:
         """Hent topic for einingsposisjon."""
         return f"/downlink/vehicle/{device_id}/realtimeDate/location"
 
+    def _device_topics(self, device_id: str) -> list[str]:
+        """Emna som skal abonnerast for ei eining, etter gjeldande innstillingar."""
+        topics = [self._get_status_topic(device_id), self._get_event_topic(device_id)]
+        if self.subscribe_location:
+            topics.append(self._get_location_topic(device_id))
+        return topics
+
+    def _subscribe_topics(self, client: mqtt_client.Client, device_ids: list[str]) -> None:
+        """Abonner på alle emne for dei oppgjevne einingane pluss ekstra emne."""
+        topics: list[str] = []
+        for device_id in device_ids:
+            topics.extend(self._device_topics(device_id))
+        topics.extend(self.extra_topics)
+        _LOGGER.info("MQTT subscribing: %s", ", ".join(topics))
+        for topic in topics:
+            client.subscribe(topic)
+
     def _handle_message(
         self,
-        device_id: str,
-        status_topic: str,
-        event_topic: str,
-        location_topic: str,
         topic: str,
         raw_payload: bytes,
         loop: Optional[asyncio.AbstractEventLoop],
     ) -> None:
-        """Handsam éi melding; planlegg tilbakekall på løkka, eller kall direkte utan løkke."""
+        """Handsam éi melding; planlegg tilbakekall på løkka, eller kall direkte utan løkke.
+
+        Einings-ID og kanal blir lesne frå emnet, så same handsamar tener alle einingar.
+        """
 
         def dispatch(callback: Callable[..., Any], *args: Any) -> None:
             if loop is None:
@@ -261,38 +289,68 @@ class MowerMQTT:
 
         if self.on_raw:
             dispatch(self.on_raw, topic, raw_payload)
+
+        device_id, channel = _parse_realtime_topic(topic)
+        if device_id is None or channel is None:
+            return
+        callbacks = self._callbacks.get(device_id)
+        if callbacks is None:
+            _LOGGER.debug("MQTT message for unregistered device: topic=%s", topic)
+            return
         try:
             payload = parse_json(raw_payload)
         except (TypeError, ValueError, UnicodeDecodeError):
             _LOGGER.warning("Could not parse MQTT message: topic=%s", topic)
             return
 
-        callbacks = self._callbacks.get(device_id, {})
-        if topic == status_topic:
+        if channel == "state":
             if not isinstance(payload, dict):
                 return
             state_payload = dict(payload)
             state_payload.setdefault("device_id", device_id)
             message = DeviceStateMessage.from_dict(state_payload)
             cached = self.status_cache.get(device_id)
-            fallback_status = cached.status if cached else None
-            status = DeviceStatus.from_state_message(message, fallback_status)
+            status = DeviceStatus.from_state_message(
+                message,
+                fallback_status=cached.status if cached else None,
+                fallback_battery=cached.battery if cached else None,
+            )
             self.status_cache[device_id] = status
             callback = callbacks.get("status")
             if callback:
                 dispatch(callback, status)
             return
-        if topic == event_topic:
+        if channel == "event":
             callback = callbacks.get("event")
             if callback and isinstance(payload, dict):
                 dispatch(callback, payload)
             return
-        if topic == location_topic:
+        if channel == "location":
             callback = callbacks.get("location")
             for point in self._location_filter.filter(parse_location_payload(payload, device_id)):
-                self.location_cache[device_id] = point
+                if point.x is not None and point.y is not None:
+                    self.location_cache[device_id] = point
                 if callback:
                     dispatch(callback, point)
+
+    def _make_on_message(
+        self, loop: Optional[asyncio.AbstractEventLoop], label: str
+    ) -> Callable[..., None]:
+        def on_message(_client: Any, _userdata: Any, msg: Any) -> None:
+            try:
+                raw_payload = msg.payload or b""
+                _LOGGER.debug(
+                    "MQTT message (%s): topic=%s bytes=%d payload=%s",
+                    label,
+                    msg.topic,
+                    len(raw_payload),
+                    raw_payload.decode("utf-8", errors="replace"),
+                )
+                self._handle_message(msg.topic, raw_payload, loop)
+            except Exception as e:
+                _LOGGER.exception("Error processing MQTT message: %s", e)
+
+        return on_message
 
     async def async_connect(self) -> None:
         """Klargjer MQTT-klienten for asynkron bruk."""
@@ -323,19 +381,21 @@ class MowerMQTT:
             )
 
             def on_connect(client, userdata, flags, reason_code, properties=None):
-                if not _reason_code_is_failure(reason_code):
-                    self._connected = True
-                    _LOGGER.info(
-                        "MQTT connected (sync): broker=%s port=%s",
-                        self.broker,
-                        self.port,
-                    )
-                else:
-                    raise MowerMQTTError(
-                        f"{ERROR_MESSAGES['MQTT_CONNECTION_FAILED']}: Return code {reason_code}"
-                    )
+                if _reason_code_is_failure(reason_code):
+                    # Kasting her ville lande på paho-tråden der ingen kan fange det.
+                    _LOGGER.error("MQTT connection failed (sync): rc=%s", reason_code)
+                    return
+                self._connected = True
+                _LOGGER.info(
+                    "MQTT connected (sync): broker=%s port=%s",
+                    self.broker,
+                    self.port,
+                )
+                # Abonnementa overlever ikkje ei ny økt; teikn dei opp att ved kvar (att)kopling.
+                self._subscribe_topics(client, list(self._callbacks))
 
             self._sync_client.on_connect = on_connect
+            self._sync_client.on_message = self._make_on_message(self._sync_loop(), "sync")
             _LOGGER.info(
                 "MQTT connecting (sync): broker=%s port=%s ws_path=%s",
                 self.broker,
@@ -355,11 +415,7 @@ class MowerMQTT:
         on_location: Optional[Callable[[DeviceLocationMessage], None]] = None,
     ) -> None:
         """Abonner asynkront på status og hendingar for ei eining."""
-        status_topic = self._get_status_topic(device_id)
-        event_topic = self._get_event_topic(device_id)
-        location_topic = self._get_location_topic(device_id)
-
-        # Ta vare på tilbakekall for denne eininga.
+        # Ta vare på tilbakekall for denne eininga (før abonnementet, så ingen melding går tapt).
         self._callbacks[device_id] = {
             "status": on_status_update,
             "event": on_event,
@@ -398,40 +454,9 @@ class MowerMQTT:
                     self.port,
                     device_id,
                 )
-                _LOGGER.info("MQTT subscribing (async): %s, %s", status_topic, event_topic)
-                _client.subscribe(status_topic)
-                _client.subscribe(event_topic)
-                if self.subscribe_location:
-                    _client.subscribe(location_topic)
-                for extra_topic in self.extra_topics:
-                    _client.subscribe(extra_topic)
+                self._subscribe_topics(_client, [device_id])
 
-            def on_message(_client, _userdata, msg) -> None:
-                try:
-                    payload_text = (msg.payload or b"").decode("utf-8", errors="replace")
-                    _LOGGER.debug(
-                        "MQTT payload (async): topic=%s payload=%s",
-                        msg.topic,
-                        payload_text,
-                    )
-                    topic = msg.topic
-                    _LOGGER.debug(
-                        "MQTT message (async): topic=%s bytes=%d device=%s",
-                        topic,
-                        len(msg.payload or b""),
-                        device_id,
-                    )
-                    self._handle_message(
-                        device_id,
-                        status_topic,
-                        event_topic,
-                        location_topic,
-                        topic,
-                        msg.payload or b"",
-                        loop,
-                    )
-                except Exception as e:
-                    _LOGGER.exception("Error processing MQTT message: %s", e)
+            on_message = self._make_on_message(loop, "async")
 
             def on_disconnect(_client, _userdata, *disconnect_args) -> None:
                 _LOGGER.debug(
@@ -467,74 +492,37 @@ class MowerMQTT:
         on_event: Optional[Callable[[dict[str, Any]], None]] = None,
         on_location: Optional[Callable[[DeviceLocationMessage], None]] = None,
     ) -> None:
-        """Abonner synkront på status og hendingar for ei eining."""
+        """Abonner synkront på status og hendingar for ei eining.
+
+        Fleire einingar kan registrerast på same klient; meldingar blir ruta etter emnet.
+        Abonnementa blir teikna opp att automatisk ved attkopling.
+        """
         if not self._sync_client:
             self.connect()
         assert self._sync_client is not None
 
-        status_topic = self._get_status_topic(device_id)
-        event_topic = self._get_event_topic(device_id)
-        location_topic = self._get_location_topic(device_id)
-        # Den synkrone stien treng inga løkke: finst det ei bunden eller køyrande løkke,
-        # blir tilbakekalla planlagde trådtrygt på henne, elles blir dei kalla direkte.
-        loop: Optional[asyncio.AbstractEventLoop] = self._loop
-        if loop is None:
-            loop = _get_running_loop_if_available()
-            if loop is not None:
-                self._loop = loop
-
-        def on_message(client, userdata, msg):
-            try:
-                payload_text = (msg.payload or b"").decode("utf-8", errors="replace")
-                _LOGGER.debug(
-                    "MQTT payload (sync): topic=%s payload=%s",
-                    msg.topic,
-                    payload_text,
-                )
-                topic = msg.topic
-                _LOGGER.debug(
-                    "MQTT message (sync): topic=%s bytes=%d device=%s",
-                    topic,
-                    len(msg.payload or b""),
-                    device_id,
-                )
-
-                self._handle_message(
-                    device_id,
-                    status_topic,
-                    event_topic,
-                    location_topic,
-                    topic,
-                    msg.payload or b"",
-                    loop,
-                )
-
-            except Exception as e:
-                # Logg feilen, men hald fram med handsaminga
-                print(f"Error processing MQTT message: {e}")
-
+        # Registrer tilbakekalla FØR abonnementet, så ei melding som kjem med ein gong
+        # (t.d. ei retained tilstandsmelding) ikkje blir kasta.
+        self._callbacks[device_id] = {
+            "status": on_status_update,
+            "event": on_event,
+            "location": on_location,
+        }
+        self._sync_client.on_message = self._make_on_message(self._sync_loop(), "sync")
         try:
-            self._sync_client.on_message = on_message
-            _LOGGER.info(
-                "MQTT subscribing (sync): %s, %s",
-                status_topic,
-                event_topic,
-            )
-            self._sync_client.subscribe(status_topic)
-            self._sync_client.subscribe(event_topic)
-            if self.subscribe_location:
-                self._sync_client.subscribe(location_topic)
-            for extra_topic in self.extra_topics:
-                self._sync_client.subscribe(extra_topic)
-
-            # Ta vare på tilbakekall for seinare meldingar.
-            self._callbacks[device_id] = {
-                "status": on_status_update,
-                "event": on_event,
-                "location": on_location,
-            }
+            if self._connected:
+                self._subscribe_topics(self._sync_client, [device_id])
+            # Elles tek on_connect seg av abonnementet når tilkoplinga er oppe.
         except Exception as e:
             raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}") from e
+
+    def _sync_loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        """Løkka for den synkrone stien: bunden eller køyrande om ho finst, elles inga."""
+        if self._loop is None:
+            running = _get_running_loop_if_available()
+            if running is not None:
+                self._loop = running
+        return self._loop
 
     def get_cached_status(self, device_id: str) -> Optional[DeviceStatus]:
         """Hent bufra einingstilstand."""

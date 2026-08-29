@@ -348,20 +348,20 @@ class NavimowMQTTAsyncTests(unittest.IsolatedAsyncioTestCase):
 class NavimowSDKTests(unittest.IsolatedAsyncioTestCase):
     async def test_location_payload_dispatches_each_filtered_point_and_updates_cache(self):
         _, _, sdk_module = _load_modules()
-        sdk = sdk_module.NavimowSDK("broker", 1883, subscribe_location=True)
+        sdk = sdk_module.NavimowSDK("broker", 1883)
         received = []
         sdk.on_location(received.append)
+        progress_only = {"mowingPercentage": 61.01, "time": 1755000100, "type": "progress"}
 
         await sdk._on_mqtt_message(
             f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/location",
-            json.dumps([PLACEHOLDER_POINT, POSITION_POINT, PROGRESS_POINT]).encode("utf-8"),
+            json.dumps([POSITION_POINT, PLACEHOLDER_POINT, progress_only]).encode("utf-8"),
             DEVICE_ID,
         )
 
-        self.assertEqual(2, len(received))
-        self.assertEqual("position", received[0].type)
-        self.assertEqual("progress", received[1].type)
-        self.assertEqual("progress", sdk.get_cached_location(DEVICE_ID).type)
+        self.assertEqual(["position", "progress"], [point.type for point in received])
+        # Framdriftspunktet utan koordinatar må ikkje overskrive siste posisjon.
+        self.assertEqual(-6.586, sdk.get_cached_location(DEVICE_ID).x)
 
     async def test_on_raw_callbacks_receive_topic_and_bytes(self):
         _, _, sdk_module = _load_modules()
@@ -498,3 +498,175 @@ class MowerMQTTAsyncTests(unittest.IsolatedAsyncioTestCase):
         location = callback.call_args.args[0]
         self.assertEqual("position", location.type)
         self.assertEqual("position", mqtt.get_cached_location(DEVICE_ID).type)
+
+
+class ReviewRegressionTests(unittest.TestCase):
+    """Regresjonsvern for funn frå den motstridande gjennomgangen."""
+
+    def setUp(self):
+        self.models, self.mqtt_module, self.sdk_module = _load_modules()
+
+    def _filter(self):
+        return self.models.LocationFilter()
+
+    def _point(self, **overrides):
+        payload = dict(POSITION_POINT)
+        payload.update(overrides)
+        return self.models.parse_location_payload(payload, overrides.get("device_id", DEVICE_ID))
+
+    def test_missing_timestamp_never_advances_watermark(self):
+        flt = self._filter()
+        accepted = flt.filter(
+            self._point(time=200) + self._point(time=None) + self._point(time=199)
+        )
+        self.assertEqual([200, None], [p.timestamp for p in accepted])
+
+    def test_watermark_is_isolated_per_device(self):
+        flt = self._filter()
+        first = self._point(time=200)
+        other = self.models.parse_location_payload(dict(POSITION_POINT, time=100), "device-2")
+        accepted = flt.filter(first + other)
+        self.assertEqual(2, len(accepted))
+
+    def test_string_and_decimal_timestamps_are_parsed(self):
+        msg = self.models.DeviceLocationMessage.from_dict({"time": "1755000000.5"})
+        self.assertEqual(1755000000, msg.timestamp)
+        msg = self.models.DeviceLocationMessage.from_dict({"time": None, "timestamp": 7})
+        self.assertEqual(7, msg.timestamp)
+
+    def test_location_message_has_defaults(self):
+        msg = self.models.DeviceLocationMessage(device_id=DEVICE_ID)
+        self.assertIsNone(msg.x)
+        self.assertEqual({}, msg.raw)
+
+    def _state_status(self, payload, cached=None):
+        message = self.models.DeviceStateMessage.from_dict(dict(payload, device_id=DEVICE_ID))
+        return self.models.DeviceStatus.from_state_message(
+            message,
+            fallback_status=cached.status if cached else None,
+            fallback_battery=cached.battery if cached else None,
+        )
+
+    def test_numeric_vehicle_state_keeps_cached_status(self):
+        cached = self.models.DeviceStatus(DEVICE_ID, self.models.MowerStatus.MOWING, 50)
+        status = self._state_status({"vehicleState": 3, "battery": 88}, cached)
+        self.assertEqual(self.models.MowerStatus.MOWING, status.status)
+        self.assertEqual(88, status.battery)
+
+    def test_partial_state_payload_keeps_cached_battery(self):
+        cached = self.models.DeviceStatus(DEVICE_ID, self.models.MowerStatus.MOWING, 88)
+        status = self._state_status({"state": "isDocked"}, cached)
+        self.assertEqual(self.models.MowerStatus.DOCKED, status.status)
+        self.assertEqual(88, status.battery)
+
+    def test_state_conversion_preserves_legacy_fields(self):
+        status = self._state_status(
+            {
+                "state": "isRunning",
+                "battery": 70,
+                "position": {"lat": 59.9, "lng": 10.7},
+                "error_code": "stuck",
+                "mowing_time": 120,
+                "capacityRemaining": [{"unit": "PERCENTAGE", "rawValue": 70}],
+            }
+        )
+        self.assertEqual({"lat": 59.9, "lng": 10.7}, status.position)
+        self.assertEqual(self.models.MowerError.STUCK, status.error_code)
+        self.assertEqual(120, status.mowing_time)
+        self.assertIn("capacityRemaining", status.extra)
+
+    def _connected_mqtt(self, **kwargs):
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, **kwargs)
+        mqtt.connect()
+        client = mqtt._sync_client
+        client.on_connect(client, None, None, 0)
+        return mqtt, client
+
+    def test_sync_path_resubscribes_every_device_on_reconnect(self):
+        mqtt, client = self._connected_mqtt(subscribe_location=True, extra_topics=["x/#"])
+        mqtt.subscribe_device(DEVICE_ID, on_status_update=mock.Mock())
+        mqtt.subscribe_device("device-2", on_status_update=mock.Mock())
+        before = len(client.subscriptions)
+
+        client.on_connect(client, None, None, 0)  # attkopling
+
+        added = client.subscriptions[before:]
+        self.assertIn(f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/location", added)
+        self.assertIn("/downlink/vehicle/device-2/realtimeDate/state", added)
+        self.assertIn("x/#", added)
+
+    def test_two_devices_share_one_sync_client(self):
+        mqtt, client = self._connected_mqtt()
+        cb_a, cb_b = mock.Mock(), mock.Mock()
+        mqtt.subscribe_device("A", on_status_update=cb_a)
+        mqtt.subscribe_device("B", on_status_update=cb_b)
+
+        client.on_message(
+            client, None, _make_message(mqtt._get_status_topic("A"), {"state": "isRunning"})
+        )
+
+        self.assertEqual(1, cb_a.call_count)
+        self.assertEqual(0, cb_b.call_count)
+        self.assertEqual(["A"], list(mqtt.status_cache))
+
+    def test_sync_on_connect_failure_does_not_raise(self):
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883)
+        mqtt.connect()
+        client = mqtt._sync_client
+        client.on_connect(client, None, None, 5)  # feilkode
+        self.assertFalse(mqtt._connected)
+
+    def test_client_flag_is_never_cleared_by_default_argument(self):
+        from mower_sdk.client import MowerClient
+
+        client = MowerClient(session=mock.Mock(), token="t", mqtt_broker="broker")
+        client.mqtt.subscribe_location = True
+        with (
+            mock.patch.object(client, "async_refresh_mqtt_info", new=mock.AsyncMock()),
+            mock.patch.object(client.mqtt, "async_subscribe_device", new=mock.AsyncMock()),
+        ):
+            asyncio.run(client.async_subscribe_device_updates(DEVICE_ID, subscribe_location=False))
+        self.assertTrue(client.mqtt.subscribe_location)
+
+    def test_public_signature_prefixes_are_frozen(self):
+        import inspect
+
+        expected = {
+            (self.sdk_module.NavimowSDK, "__init__"): [
+                "self",
+                "broker",
+                "port",
+                "username",
+                "password",
+                "ws_path",
+                "auth_headers",
+                "loop",
+                "records",
+                "keepalive_seconds",
+                "reconnect_min_delay",
+                "reconnect_max_delay",
+            ],
+            (self.mqtt_module.NavimowMQTT, "__init__"): [
+                "self",
+                "broker",
+                "port",
+                "username",
+                "password",
+                "records",
+                "ws_path",
+                "auth_headers",
+                "loop",
+                "keepalive_seconds",
+                "reconnect_min_delay",
+                "reconnect_max_delay",
+            ],
+            (self.mqtt_module.MowerMQTT, "subscribe_device"): [
+                "self",
+                "device_id",
+                "on_status_update",
+                "on_event",
+            ],
+        }
+        for (cls, name), prefix in expected.items():
+            params = list(inspect.signature(getattr(cls, name)).parameters)
+            self.assertEqual(prefix, params[: len(prefix)], f"{cls.__name__}.{name}")

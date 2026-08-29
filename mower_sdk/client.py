@@ -131,7 +131,9 @@ class MowerClient:
         Unntak:
             MowerMQTTError: Dersom abonnementet feilar
         """
-        self.mqtt.subscribe_location = subscribe_location
+        if subscribe_location:
+            # Slå berre på; eit seinare kall med standardverdien skal ikkje slå av for andre einingar.
+            self.mqtt.subscribe_location = True
         await self.async_refresh_mqtt_info()
         await self.mqtt.async_connect()
         await self.mqtt.async_subscribe_device(
@@ -156,7 +158,9 @@ class MowerClient:
         Unntak:
             MowerMQTTError: Dersom abonnementet feilar
         """
-        self.mqtt.subscribe_location = subscribe_location
+        if subscribe_location:
+            # Slå berre på; eit seinare kall med standardverdien skal ikkje slå av for andre einingar.
+            self.mqtt.subscribe_location = True
         self.refresh_mqtt_info()
         self.mqtt.connect()
         self.mqtt.subscribe_device(

@@ -27,10 +27,9 @@ class NavimowSDK:
     """SDK-fasade for MQTT-styrt integrasjon.
 
     Merknader:
-        - on_state/on_event/on_attributes-tilbakekall er synkrone.
-        - Tilbakekalla blir køyrde frå MQTT-tråden eller event loop-konteksten.
-          Home Assistant må byte til hass-løkka via call_soon_threadsafe eller
-          run_coroutine_threadsafe.
+        - on_state/on_event/on_attributes/on_location/on_raw-tilbakekall er synkrone.
+        - Tilbakekalla blir alltid køyrde på den bundne asyncio-løkka (aldri på
+          MQTT-tråden), så Home Assistant kan røre entitetar direkte i dei.
     """
 
     def __init__(
@@ -162,7 +161,9 @@ class NavimowSDK:
             for location_message in self._location_filter.filter(
                 parse_location_payload(payload_dict, device_id)
             ):
-                self._location_cache[device_id] = location_message
+                if location_message.x is not None and location_message.y is not None:
+                    # Framdriftspunkt utan koordinatar skal ikkje overskrive siste posisjon.
+                    self._location_cache[device_id] = location_message
                 for location_callback in list(self._location_callbacks):
                     location_callback(location_message)
             return

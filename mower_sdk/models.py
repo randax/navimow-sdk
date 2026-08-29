@@ -4,7 +4,7 @@ Definerer alle datamodellar som SDK-en bruker, inkludert opprekningar og datakla
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
@@ -353,40 +353,29 @@ class DeviceStatus:
 
     @classmethod
     def from_state_message(
-        cls, message: "DeviceStateMessage", fallback_status: Optional[MowerStatus] = None
+        cls,
+        message: "DeviceStateMessage",
+        fallback_status: Optional[MowerStatus] = None,
+        fallback_battery: Optional[int] = None,
     ) -> "DeviceStatus":
-        """Gjer ei MQTT-tilstandsmelding om til den eldre statusmodellen."""
-        raw = message.raw or {}
-        has_state = any(key in raw for key in ("state", "status", "vehicleState"))
-        try:
-            status = MowerStatus(message.state)
-        except ValueError:
-            status = MowerStatus.UNKNOWN
-        if not has_state:
-            status = fallback_status or MowerStatus.UNKNOWN
+        """Gjer ei MQTT-tilstandsmelding om til statusmodellen.
 
-        known_keys = {
-            "device_id",
-            "id",
-            "timestamp",
-            "state",
-            "status",
-            "vehicleState",
-            "battery",
-            "capacityRemaining",
-            "descriptiveCapacityRemaining",
-            "signal_strength",
-        }
-        extra = {key: value for key, value in raw.items() if key not in known_keys} or None
-        return cls(
-            device_id=message.device_id,
-            status=status,
-            battery=message.battery or 0,
-            position=None,
-            signal_strength=message.signal_strength,
-            timestamp=message.timestamp,
-            extra=extra,
-        )
+        Byggjer på `from_dict` slik at posisjon, feilkode, klippetid og `extra` blir
+        handsama på same måte som for REST-svar. Tilstandskanalen sender delvise
+        meldingar, så manglande tilstand/batteri fell tilbake til dei bufra verdiane.
+        """
+        raw = dict(message.raw or {})
+        raw.setdefault("device_id", message.device_id)
+        status = cls.from_dict(raw)
+
+        if status.status is MowerStatus.UNKNOWN and fallback_status is not None:
+            # Anten mangla tilstandsnøkkelen, eller verdien (t.d. numerisk vehicleState)
+            # er ukjend for oss; hald på den sist kjende tilstanden.
+            status.status = fallback_status
+        has_battery = any(key in raw for key in ("battery", "capacityRemaining"))
+        if not has_battery and fallback_battery is not None:
+            status.battery = fallback_battery
+        return status
 
     def to_dict(self) -> dict[str, Any]:
         """Gjer om til ei ordbok.
@@ -474,9 +463,16 @@ def _float_or_none(value: Any) -> Optional[float]:
 
 
 def _int_or_none(value: Any) -> Optional[int]:
+    """Tolk heiltal, òg frå desimaltal og tal som strengar ("1755000000.5")."""
+    if isinstance(value, bool):
+        return None
     try:
         return int(value)
     except (TypeError, ValueError):
+        pass
+    try:
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -485,16 +481,16 @@ class DeviceLocationMessage:
     """Ei einskild posisjonslesing frå MQTT."""
 
     device_id: str
-    x: Optional[float]
-    y: Optional[float]
-    theta: Optional[float]
-    timestamp: Optional[int]
-    type: Optional[str]
-    vehicle_state: Optional[int]
-    mowing_percentage: Optional[float]
-    subtotal_area: Optional[float]
-    mow_start_type: Optional[Any]
-    raw: dict[str, Any]
+    x: Optional[float] = None
+    y: Optional[float] = None
+    theta: Optional[float] = None
+    timestamp: Optional[int] = None
+    type: Optional[str] = None
+    vehicle_state: Optional[int] = None
+    mowing_percentage: Optional[float] = None
+    subtotal_area: Optional[float] = None
+    mow_start_type: Optional[Any] = None
+    raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceLocationMessage":
@@ -505,7 +501,9 @@ class DeviceLocationMessage:
             x=_float_or_none(payload.get("postureX")),
             y=_float_or_none(payload.get("postureY")),
             theta=_float_or_none(payload.get("postureTheta")),
-            timestamp=_int_or_none(payload.get("time", payload.get("timestamp"))),
+            timestamp=_int_or_none(
+                payload["time"] if payload.get("time") is not None else payload.get("timestamp")
+            ),
             type=str(raw_type) if raw_type is not None else None,
             vehicle_state=_int_or_none(payload.get("vehicleState")),
             mowing_percentage=_float_or_none(payload.get("mowingPercentage")),

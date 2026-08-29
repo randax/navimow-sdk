@@ -106,8 +106,13 @@ Felta og leidningsforma er observerte gjennom tredjepartsadapteren
 
 `extra_topics` abonnerer på kvart oppgjeve MQTT-emne ordrett. `on_raw()` får
 `(topic, bytes)` for **kvar** mottatt melding, også ukjende emne og meldingar
-utan kjend einings-ID. Råtilbakekall blir, som andre SDK-tilbakekall, køyrde på
-den bundne asyncio-løkka.
+utan kjend einings-ID. På `NavimowSDK` blir råtilbakekall, som andre
+SDK-tilbakekall, køyrde på den bundne asyncio-løkka. På `MowerMQTT` er `on_raw`
+eit synkront tilbakekall som blir planlagt på løkka når ei finst, elles kalla
+direkte frå MQTT-tråden. Merk at `extra_topics` som overlappar dei innebygde
+emna (t.d. `/downlink/vehicle/{id}/#`) gjer at meglaren leverer kvar melding
+éin gong per treffande abonnement, så `--discover` i dømeskriptet gjev doble
+utskrifter.
 
 ```python
 sdk = NavimowSDK(..., extra_topics=["/downlink/vehicle/device-1/#"])
