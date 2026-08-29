@@ -1259,3 +1259,48 @@ class ReviewRegressionTests(unittest.TestCase):
             await asyncio.gather(first, second, return_exceptions=True)
 
         loop.run_until_complete(scenario())
+
+    def test_sync_subscribe_inside_running_loop_binds_it_without_loop_argument(self):
+        callback = mock.Mock()
+
+        async def scenario():
+            mqtt = self.mqtt_module.MowerMQTT("broker", 1883)  # inga loop=
+            mqtt.subscribe_device("A", on_status_update=callback)
+            self.assertIs(asyncio.get_running_loop(), mqtt.loop)
+            client = mqtt._sync_client
+            client.on_message(
+                client, None, _make_message(mqtt._get_status_topic("A"), {"state": "isRunning"})
+            )
+            self.assertEqual(0, callback.call_count)  # i kø på løkka, ikkje kalla direkte
+            await asyncio.sleep(0)
+            self.assertEqual(1, callback.call_count)
+
+        asyncio.run(scenario())
+
+    def test_async_late_location_enable_covers_earlier_devices(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+
+        async def scenario():
+            a = asyncio.ensure_future(mqtt.async_subscribe_device("A"))
+            await asyncio.sleep(0)
+            client = mqtt._async_client
+            client.on_connect(client, None, None, 0)
+            mqtt.subscribe_location = True
+            b = asyncio.ensure_future(mqtt.async_subscribe_device("B"))
+            await asyncio.sleep(0)
+            self.assertIn("/downlink/vehicle/A/realtimeDate/location", client.subscriptions)
+            self.assertIn("/downlink/vehicle/B/realtimeDate/location", client.subscriptions)
+            mqtt._async_stop_event.set()
+            await asyncio.gather(a, b)
+
+        loop.run_until_complete(scenario())
+
+    def test_non_finite_floats_are_rejected_everywhere(self):
+        msg = self.models.DeviceLocationMessage.from_dict(
+            {"postureX": float("nan"), "postureY": float("inf"), "mowingPercentage": "-inf"}
+        )
+        self.assertIsNone(msg.x)
+        self.assertIsNone(msg.y)
+        self.assertIsNone(msg.mowing_percentage)

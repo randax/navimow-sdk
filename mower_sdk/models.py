@@ -4,6 +4,7 @@ Definerer alle datamodellar som SDK-en bruker, inkludert opprekningar og datakla
 """
 
 import logging
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
@@ -490,9 +491,10 @@ def _float_or_none(value: Any) -> Optional[float]:
     if isinstance(value, bool):
         return None
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
         return None
+    return result if math.isfinite(result) else None
 
 
 def _int_or_none(value: Any) -> Optional[int]:

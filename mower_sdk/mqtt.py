@@ -207,6 +207,7 @@ class MowerMQTT:
         self._async_stop_event: Optional[asyncio.Event] = None
         self._async_connected = False
         self._async_session_was_connected = False
+        self._async_location_pass_done = False
         self._async_waiters = 0
         self._callbacks: dict[str, dict[str, Optional[Callable[..., Any]]]] = {}
         self._connected = False
@@ -442,6 +443,7 @@ class MowerMQTT:
                     _LOGGER.exception("MQTT subscribe failed after connect (sync)")
 
             self._sync_client.on_connect = on_connect
+            self._sync_loop()  # bind ei køyrande løkke no, om ei finst
             self._sync_client.on_message = self._make_on_message(self._bound_loop, "sync")
             _LOGGER.info(
                 "MQTT connecting (sync): broker=%s port=%s ws_path=%s",
@@ -503,7 +505,12 @@ class MowerMQTT:
         elif self._async_connected:
             assert self._async_client is not None
             try:
-                self._subscribe_topics(self._async_client, [device_id])
+                if self.subscribe_location and not self._async_location_pass_done:
+                    # Nyleg påslått subscribe_location: éin full pass over alle einingar.
+                    self._subscribe_topics(self._async_client, list(self._callbacks))
+                else:
+                    self._subscribe_topics(self._async_client, [device_id])
+                self._async_location_pass_done = self.subscribe_location
             except Exception as e:
                 self._forget_callbacks(device_id, my_callbacks)
                 raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}") from e
@@ -534,6 +541,7 @@ class MowerMQTT:
         self._async_stop_event = None
         self._async_connected = False
         self._async_session_was_connected = False
+        self._async_location_pass_done = False
         if client is not None:
             try:
                 await loop.run_in_executor(None, _stop_paho_client, client)
@@ -546,6 +554,7 @@ class MowerMQTT:
         self._async_stop_event = stop_event
         self._async_connected = False
         self._async_session_was_connected = False
+        self._async_location_pass_done = False
         try:
             client = self._build_client()
             self._async_client = client
@@ -572,6 +581,7 @@ class MowerMQTT:
                 _LOGGER.info("MQTT connected (async): broker=%s port=%s", self.broker, self.port)
                 try:
                     self._subscribe_topics(_client, list(self._callbacks))
+                    self._async_location_pass_done = self.subscribe_location
                 except Exception:  # må ikkje drepe paho sin nettverkstråd
                     _LOGGER.exception("MQTT subscribe failed after connect (async)")
 
@@ -610,6 +620,7 @@ class MowerMQTT:
         self._async_stop_event = None
         self._async_connected = False
         self._async_session_was_connected = False
+        self._async_location_pass_done = False
         if client is not None:
             try:
                 _stop_paho_client(client)
@@ -639,6 +650,7 @@ class MowerMQTT:
             "event": on_event,
             "location": on_location,
         }
+        self._sync_loop()  # bind ei køyrande løkke no, om ei finst
         self._sync_client.on_message = self._make_on_message(self._bound_loop, "sync")
         try:
             if self._connected:
