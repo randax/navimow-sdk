@@ -29,6 +29,11 @@ _RAW_STATE_TO_CANONICAL: dict[str, str] = {
 }
 
 
+def _state_source(data: dict[str, Any]) -> Any:
+    """Den eine staden som avgjer kva nøkkel tilstanden blir lesen frå."""
+    return data.get("state") or data.get("status") or data.get("vehicleState")
+
+
 def _is_recognised_state(raw_state: Any) -> bool:
     """Sei om råverdien er ein tilstand vi kjenner (kanonisk eller via oppslagstabellen)."""
     if isinstance(raw_state, MowerStatus):
@@ -328,7 +333,7 @@ class DeviceStatus:
         Retur:
             Ein DeviceStatus-instans
         """
-        status_source = data.get("status") or data.get("state") or data.get("vehicleState")
+        status_source = _state_source(data)
         normalized_state = _normalize_state_value(status_source)
         try:
             status = MowerStatus(normalized_state)
@@ -387,7 +392,7 @@ class DeviceStatus:
             # Fall berre tilbake når tilstanden manglar eller er ukjend for oss (t.d.
             # numerisk vehicleState). Ein eksplisitt kjend verdi som «offline» skal
             # sleppe gjennom som UNKNOWN, elles maskerer vi at klipparen forsvann.
-            raw_state = raw.get("state") or raw.get("status") or raw.get("vehicleState")
+            raw_state = _state_source(raw)
             if not _is_recognised_state(raw_state):
                 status.status = fallback_status
         if _extract_battery_value_or_none(raw) is None and fallback_battery is not None:
@@ -439,11 +444,9 @@ class DeviceStateMessage:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceStateMessage":
-        raw_state = payload.get("state") or payload.get("status") or payload.get("vehicleState")
+        raw_state = _state_source(payload)
         normalized_state = _normalize_state_value(raw_state)
-        metrics = payload.get("metrics")
-        if not isinstance(metrics, dict):
-            metrics = dict(metrics or {})
+        metrics = dict(payload.get("metrics") or {})  # kopi: ikkje endre lasta til kallaren
         if raw_state is not None and normalized_state != raw_state:
             metrics["raw_state"] = raw_state
 

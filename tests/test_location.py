@@ -790,3 +790,94 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertEqual(6, len(loop.calls))  # 3 on_raw + status + event + location, alle i kø
         loop.drain()
         self.assertEqual(6, len(seen_threads))
+
+    def test_disconnect_then_connect_rebuilds_client_and_resubscribes(self):
+        mqtt, client = self._connected_mqtt()
+        mqtt.subscribe_device("A", on_status_update=mock.Mock())
+        mqtt.disconnect()
+        mqtt.connect()
+        new_client = mqtt._sync_client
+        self.assertIsNot(client, new_client)
+        new_client.on_connect(new_client, None, None, 0)
+        self.assertIn("/downlink/vehicle/A/realtimeDate/state", new_client.subscriptions)
+
+    def test_failing_callbacks_on_no_loop_path_do_not_swallow_the_message(self):
+        import logging
+
+        logging.getLogger("mower_sdk.mqtt").disabled = True
+        self.addCleanup(setattr, logging.getLogger("mower_sdk.mqtt"), "disabled", False)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, subscribe_location=True)
+        mqtt.on_raw = lambda *_a: 1 / 0
+        status, location = mock.Mock(), mock.Mock()
+        location.side_effect = [ZeroDivisionError(), None]
+        mqtt.subscribe_device("A", on_status_update=status, on_location=location)
+        client = mqtt._sync_client
+        client.on_message(
+            client, None, _make_message(mqtt._get_status_topic("A"), {"state": "isRunning"})
+        )
+        client.on_message(
+            client,
+            None,
+            _make_message(
+                mqtt._get_location_topic("A"),
+                [POSITION_POINT, dict(POSITION_POINT, time=1755000001)],
+            ),
+        )
+        self.assertEqual(1, status.call_count)
+        self.assertEqual(2, location.call_count)
+
+    def test_raw_callback_isolation_in_navimow_sdk(self):
+        import logging
+
+        logging.getLogger("mower_sdk.sdk").disabled = True
+        self.addCleanup(setattr, logging.getLogger("mower_sdk.sdk"), "disabled", False)
+        sdk = self.sdk_module.NavimowSDK("broker", 1883)
+        seen = []
+        sdk.on_raw(lambda *_a: 1 / 0)
+        sdk.on_raw(lambda t, p: seen.append(t))
+        asyncio.run(sdk._mqtt.on_raw("t", b"x"))
+        self.assertEqual(["t"], seen)
+
+    def test_invalid_extra_topics_are_rejected_early(self):
+        for bad in ([""], ["a\x00b"], [None]):
+            with self.assertRaises(ValueError):
+                self.mqtt_module.NavimowMQTT("broker", 1883, None, None, [], extra_topics=bad)
+            with self.assertRaises(ValueError):
+                self.mqtt_module.MowerMQTT("broker", 1883, extra_topics=bad)
+
+    def test_subscribe_failure_in_on_connect_is_logged_not_raised(self):
+        import logging
+
+        logging.getLogger("mower_sdk.mqtt").disabled = True
+        self.addCleanup(setattr, logging.getLogger("mower_sdk.mqtt"), "disabled", False)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883)
+        mqtt.connect()
+        client = mqtt._sync_client
+        client.subscribe = mock.Mock(side_effect=ValueError("bad topic"))
+        mqtt.subscribe_device("A", on_status_update=mock.Mock())
+        client.on_connect(client, None, None, 0)  # må ikkje kaste
+        self.assertTrue(mqtt._connected)
+
+    def test_subscribe_device_only_subscribes_the_new_device(self):
+        mqtt, client = self._connected_mqtt()
+        for name in ("A", "B", "C"):
+            mqtt.subscribe_device(name, on_status_update=mock.Mock())
+        self.assertEqual(6, len(client.subscriptions))  # 2 emne × 3 einingar, ingen dublettar
+
+    def test_state_from_dict_does_not_mutate_caller_metrics(self):
+        metrics = {"a": 1}
+        self.models.DeviceStateMessage.from_dict({"state": "isRunning", "metrics": metrics})
+        self.assertEqual({"a": 1}, metrics)
+
+    def test_navimow_sdk_partial_state_keeps_cached_battery_and_state(self):
+        sdk = self.sdk_module.NavimowSDK("broker", 1883)
+        topic = f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/state"
+        asyncio.run(
+            sdk._on_mqtt_message(topic, b'{"state": "isRunning", "battery": 66}', DEVICE_ID)
+        )
+        asyncio.run(sdk._on_mqtt_message(topic, b'{"signal_strength": 4}', DEVICE_ID))
+        cached = sdk.get_cached_state(DEVICE_ID)
+        self.assertEqual(66, cached.battery)
+        self.assertEqual("mowing", cached.state)
+        asyncio.run(sdk._on_mqtt_message(topic, b'{"state": "offline"}', DEVICE_ID))
+        self.assertEqual("unknown", sdk.get_cached_state(DEVICE_ID).state)

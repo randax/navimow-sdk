@@ -16,6 +16,9 @@ from mower_sdk.models import (
     DeviceLocationMessage,
     DeviceStateMessage,
     LocationFilter,
+    _extract_battery_value_or_none,
+    _is_recognised_state,
+    _state_source,
     parse_location_payload,
 )
 from mower_sdk.mqtt import NavimowMQTT
@@ -140,7 +143,10 @@ class NavimowSDK:
 
     async def _on_mqtt_raw(self, topic: str, payload: bytes) -> None:
         for raw_callback in list(self._raw_callbacks):
-            raw_callback(topic, payload)
+            try:
+                raw_callback(topic, payload)
+            except Exception:  # eitt feilande tilbakekall skal ikkje stoppe resten
+                _LOGGER.exception("Raw callback failed for topic %s", topic)
 
     async def _on_mqtt_message(self, topic: str, payload: bytes, device_id: str) -> None:
         try:
@@ -179,6 +185,15 @@ class NavimowSDK:
 
         if channel == "state":
             state_message = DeviceStateMessage.from_dict(payload_dict)
+            cached = self._state_cache.get(state_message.device_id)
+            if cached is not None:
+                # Tilstandskanalen sender delvise meldingar; hald på siste kjende verdiar.
+                if _extract_battery_value_or_none(payload_dict) is None:
+                    state_message.battery = cached.battery
+                if state_message.state == "unknown" and not _is_recognised_state(
+                    _state_source(payload_dict)
+                ):
+                    state_message.state = cached.state
             self._state_cache[state_message.device_id] = state_message
             for state_callback in list(self._state_callbacks):
                 state_callback(state_message)
