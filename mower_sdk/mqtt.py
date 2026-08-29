@@ -130,12 +130,11 @@ def _validate_topics(topics: Optional[list[str]]) -> list[str]:
     """Kontroller ekstra emne tidleg, så feil ikkje først dukkar opp på MQTT-tråden."""
     result: list[str] = []
     for topic in topics or []:
-        if (
-            not isinstance(topic, str)
-            or not topic
-            or "\x00" in topic
-            or len(topic.encode("utf-8")) > 65535
-        ):
+        try:
+            too_long = isinstance(topic, str) and len(topic.encode("utf-8")) > 65535
+        except UnicodeEncodeError:
+            too_long = True  # t.d. einslege surrogat: kan ikkje sendast på leidninga
+        if not isinstance(topic, str) or not topic or "\x00" in topic or too_long:
             raise ValueError(f"Invalid MQTT topic in extra_topics: {topic!r}")
         result.append(topic)
     return result
@@ -575,6 +574,8 @@ class MowerMQTT:
                         except asyncio.CancelledError:
                             teardown.add_done_callback(_log_teardown_result)
                             raise
+                        except Exception:  # må ikkje maskere eit avbrot på veg ut
+                            _LOGGER.exception("Async MQTT session teardown failed")
                 if not stop_event.replaced:
                     return  # tilkoplinga vart broten (eller fråkopla): kontrakten er å returnere
                 # Økta vart bytt ut (t.d. nye legitimasjonar): bli med i den nye i staden for

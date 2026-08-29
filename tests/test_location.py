@@ -1948,3 +1948,7 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertEqual(42, status.battery)
         # «unknown» er ein kjend kanonisk verdi og blir difor ikkje overstyrt av mellomlageret
         self.assertEqual(self.models.MowerStatus.UNKNOWN, status.status)
+
+    def test_lone_surrogate_topic_is_rejected_with_value_error(self):
+        with self.assertRaises(ValueError):
+            self.mqtt_module.MowerMQTT("broker", 1883, extra_topics=["\ud800"])
