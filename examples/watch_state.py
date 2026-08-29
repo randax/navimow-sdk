@@ -1,4 +1,4 @@
-"""Stream live state/event/attribute updates over MQTT until Ctrl-C."""
+"""Strøym tilstand/hendingar/attributtar over MQTT til Ctrl-C."""
 
 import asyncio
 import logging
@@ -14,15 +14,15 @@ from mower_sdk import (
 
 
 def on_state(msg: DeviceStateMessage) -> None:
-    print(f"[state] {msg.device_id}: {msg.state} battery={msg.battery}% pos={msg.position}")
+    print(f"[tilstand] {msg.device_id}: {msg.state} batteri={msg.battery}% pos={msg.position}")
 
 
 def on_event(msg: DeviceEventMessage) -> None:
-    print(f"[event] {msg.device_id}: {msg.type}/{msg.event} {msg.level or ''} {msg.message or ''}")
+    print(f"[hending] {msg.device_id}: {msg.type}/{msg.event} {msg.level or ''} {msg.message or ''}")
 
 
 def on_attributes(msg: DeviceAttributesMessage) -> None:
-    print(f"[attrs] {msg.device_id}: {msg.attributes}")
+    print(f"[attr] {msg.device_id}: {msg.attributes}")
 
 
 async def main() -> None:
@@ -52,7 +52,7 @@ async def main() -> None:
             loop.add_signal_handler(sig, stop.set)
 
         sdk.connect()
-        print(f"Watching {len(devices)} device(s); Ctrl-C to stop.")
+        print(f"Følgjer {len(devices)} eining(ar); Ctrl-C for å stoppe.")
         try:
             await stop.wait()
         finally:

@@ -1,7 +1,7 @@
-# REST: discovery, status, commands
+# REST: oppdaging, status, kommandoar
 
-`MowerClient` is the everyday entry point. It owns a `MowerAPI` (REST) and a
-`MowerMQTT` (placeholder) and keeps the current token.
+`MowerClient` er inngangen til dagleg bruk. Han eig ein `MowerAPI` (REST) og
+ein `MowerMQTT` (plasshaldar), og held det gjeldande teiknet.
 
 ```python
 from mower_sdk import MowerClient, UrllibSession
@@ -10,22 +10,22 @@ async with UrllibSession() as session:
     client = MowerClient(session=session, token=TOKEN, api_base_url=API_URL)
 ```
 
-Constructor parameters:
+Parametrar til konstruktøren:
 
-| Name | Default | Notes |
+| Namn | Standard | Merknad |
 |---|---|---|
-| `session` | — | Anything matching `mower_sdk.http.HTTPSession` (`UrllibSession`, `aiohttp.ClientSession`) |
-| `token` | — | Bearer token |
-| `api_base_url` | `""` | Base URL; trailing slash is stripped |
-| `mqtt_broker`, `mqtt_port`, `mqtt_username`, `mqtt_password` | — | Optional; overwritten by `async_refresh_mqtt_info()` |
-| `loop` | `None` | Explicit asyncio loop for the MQTT side |
+| `session` | — | Alt som oppfyller `mower_sdk.http.HTTPSession` (`UrllibSession`, `aiohttp.ClientSession`) |
+| `token` | — | Berarteikn |
+| `api_base_url` | `""` | Grunn-URL; avsluttande skråstrek blir fjerna |
+| `mqtt_broker`, `mqtt_port`, `mqtt_username`, `mqtt_password` | — | Valfrie; blir overskrivne av `async_refresh_mqtt_info()` |
+| `loop` | `None` | Eksplisitt asyncio-løkke for MQTT-sida |
 
-Every method below has an async form (`async_*`) and a blocking form. The
-blocking forms call `asyncio.run()` internally, so they must **not** be called
-from inside a running loop. Prefer the async forms everywhere except one-off
-scripts.
+Kvar metode nedanfor finst i asynkron form (`async_*`) og blokkerande form. Dei
+blokkerande formene kallar `asyncio.run()` internt, så dei må **ikkje** kallast
+frå ei køyrande løkke. Føretrekk dei asynkrone formene overalt, unnateke i
+eingongsskript.
 
-## Discover devices
+## Oppdag einingar
 
 ```python
 devices = await client.async_discover_devices()   # list[Device]
@@ -33,26 +33,26 @@ for d in devices:
     print(d.id, d.name, d.model, d.firmware_version, d.online)
 ```
 
-`Device.extra` keeps the raw payload fields the dataclass does not model.
+`Device.extra` tek vare på råfelt som dataklassen ikkje modellerer.
 
-## Read status
+## Les status
 
 ```python
-status = await client.async_get_device_status(device_id)         # one
-statuses = await client.async_get_device_statuses([id1, id2])    # many, dict[id, DeviceStatus]
+status = await client.async_get_device_status(device_id)         # éi
+statuses = await client.async_get_device_statuses([id1, id2])    # fleire, dict[id, DeviceStatus]
 ```
 
 ```python
 print(status.status)          # MowerStatus.MOWING
 print(status.battery)         # 87
 print(status.error_code)      # MowerError.NONE
-print(status.position)        # {"lat": 59.91, "lng": 10.75} or None
+print(status.position)        # {"lat": 59.91, "lng": 10.75} eller None
 ```
 
-An unknown id raises `MowerAPIError` with `error_code="DEVICE_NOT_FOUND"` and
+Ein ukjend ID kastar `MowerAPIError` med `error_code="DEVICE_NOT_FOUND"` og
 `status_code=404`.
 
-## Send commands
+## Send kommandoar
 
 ```python
 await client.async_start_mowing(device_id)
@@ -61,18 +61,18 @@ await client.async_resume(device_id)
 await client.async_dock(device_id)
 ```
 
-Or go through the API for `STOP`:
+Eller gå via API-et for `STOP`:
 
 ```python
 from mower_sdk import MowerCommand
 await client.api.async_send_command(device_id, MowerCommand.STOP)
 ```
 
-Each returns the server's `data` dict. A rejected command raises
-`MowerAPIError` whose `error_code` is the platform's code (e.g.
-`deviceOffline`). `alreadyInState` is swallowed and treated as success.
+Kvar returnerer `data`-ordboka frå tenaren. Ein avvist kommando kastar
+`MowerAPIError` der `error_code` er koden frå plattforma (t.d.
+`deviceOffline`). `alreadyInState` blir svelgd og rekna som vellykka.
 
-To poll for the outcome of earlier commands:
+For å hente utfallet av tidlegare kommandoar:
 
 ```python
 results = await client.api.async_query_command_results(
@@ -80,17 +80,17 @@ results = await client.api.async_query_command_results(
 )
 ```
 
-## Rotate the token
+## Byt teikn
 
 ```python
 client.update_token(new_token)
 ```
 
-This updates the REST header immediately. If you also hold a `NavimowSDK`,
-call `sdk.update_mqtt_credentials(auth_headers={"Authorization": f"Bearer {new_token}"})`
-so the WebSocket handshake uses the new token on the next reconnect.
+Dette oppdaterer REST-hovudet med ein gong. Har du òg ein `NavimowSDK`, kall
+`sdk.update_mqtt_credentials(auth_headers={"Authorization": f"Bearer {new_token}"})`
+slik at WebSocket-handtrykket brukar det nye teiknet ved neste attkopling.
 
-## Using aiohttp instead of UrllibSession
+## Bruk aiohttp i staden for UrllibSession
 
 ```python
 import aiohttp
@@ -99,14 +99,14 @@ async with aiohttp.ClientSession() as session:
     client = MowerClient(session=session, token=TOKEN, api_base_url=API_URL)
 ```
 
-Both transports satisfy the same protocol; `UrllibSession` runs each request in
-a worker thread via `asyncio.to_thread`, has a 30 s timeout and a 16 MiB
-response cap (`UrllibSession(timeout=10, max_response_bytes=1_000_000)`), and
-strips credentials on cross-origin redirects.
+Begge transportane oppfyller same protokoll; `UrllibSession` køyrer kvar
+førespurnad i ein arbeidstråd via `asyncio.to_thread`, har 30 s tidsavbrot og
+16 MiB svargrense (`UrllibSession(timeout=10, max_response_bytes=1_000_000)`),
+og fjernar legitimasjon ved omdirigering til andre opphav.
 
-## Full example: a small CLI
+## Fullt døme: ein liten CLI
 
-See `examples/control.py`:
+Sjå `examples/control.py`:
 
 ```bash
 python examples/control.py list

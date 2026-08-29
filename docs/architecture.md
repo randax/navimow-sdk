@@ -1,60 +1,60 @@
-# How the SDK works
+# Slik verkar SDK-en
 
-## Layers
+## Lag
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Your application / Home Assistant integration               │
+│  Applikasjonen din / Home Assistant-integrasjon              │
 ├──────────────────────────────────────────────────────────────┤
 │  MowerClient          NavimowSDK            Navimow          │
-│  (REST facade +       (MQTT facade with     (account +       │
-│   token holder)        typed callbacks)      device objects) │
+│  (REST-fasade +       (MQTT-fasade med      (konto +         │
+│   teiknhaldar)         typa tilbakekall)     einingsobjekt)  │
 ├───────────────┬──────────────────────┬───────────────────────┤
 │  MowerAPI     │  NavimowMQTT         │  NavimowCloud         │
-│  REST calls   │  paho-mqtt over WSS  │  NavimowCloudDevice   │
+│  REST-kall    │  paho-mqtt over WSS  │  NavimowCloudDevice   │
 │               │                      │  StateManager         │
 ├───────────────┼──────────────────────┴───────────────────────┤
-│  HTTPSession  │  paho-mqtt Client (own network thread)       │
+│  HTTPSession  │  paho-mqtt Client (eigen nettverkstråd)      │
 │  (Urllib /    │                                              │
 │   aiohttp)    │                                              │
 └───────────────┴──────────────────────────────────────────────┘
 ```
 
-Pick the entry point that matches the job:
+Vel inngangen som passar jobben:
 
-| You want to… | Use |
+| Du vil … | Bruk |
 |---|---|
-| List mowers, read a status snapshot, start/pause/resume/dock | `MowerClient` (or `MowerAPI` directly) |
-| Receive state/event/attribute pushes as they happen | `NavimowSDK` |
-| Model each mower as an object with its own last-known state and subscribers | `Navimow` → `NavimowCloudDevice` → `StateManager` |
-| Bring your own HTTP client | Any object matching the `HTTPSession` protocol in `mower_sdk.http` |
+| Liste klipparar, lese eit statusbilete, starte/pause/halde fram/dokke | `MowerClient` (eller `MowerAPI` direkte) |
+| Ta imot tilstand/hendingar/attributtar etter kvart som dei skjer | `NavimowSDK` |
+| Modellere kvar klippar som eit objekt med eigen sist kjend tilstand og abonnentar | `Navimow` → `NavimowCloudDevice` → `StateManager` |
+| Bruke din eigen HTTP-klient | Kva som helst objekt som oppfyller `HTTPSession`-protokollen i `mower_sdk.http` |
 
-## REST transport
+## REST-transport
 
-`MowerAPI` builds every request the same way:
+`MowerAPI` byggjer kvar førespurnad på same måte:
 
-1. `Authorization: Bearer <token>` and a fresh `requestId` UUID header.
-2. `session.request(method, url, json=..., params=..., headers=...)` used as an
-   async context manager.
+1. `Authorization: Bearer <teikn>` og eit ferskt `requestId`-UUID-hovud.
+2. `session.request(method, url, json=..., params=..., headers=...)` brukt som
+   asynkron kontekstbehandlar.
 3. HTTP ≥ 400 → `MowerAPIError(status_code=...)`.
-4. Body is JSON with a `code` field; anything other than `code == 1` →
-   `MowerAPIError` carrying the server's `desc`.
-5. Transport failures (`HTTPClientError`, `aiohttp.ClientError`) are wrapped in
-   `MowerAPIError` so callers only catch one type.
+4. Kroppen er JSON med eit `code`-felt; alt anna enn `code == 1` →
+   `MowerAPIError` med `desc` frå tenaren.
+5. Transportfeil (`HTTPClientError`, `aiohttp.ClientError`) blir pakka inn i
+   `MowerAPIError`, så kallarar berre treng fange éin type.
 
-Endpoints used:
+Endepunkt som blir brukte:
 
-| Method | Path | Purpose |
+| Metode | Sti | Føremål |
 |---|---|---|
-| GET | `/openapi/smarthome/authList` | List authorised devices |
-| POST | `/openapi/smarthome/getVehicleStatus` | Batch status for device ids |
-| POST | `/openapi/smarthome/sendCommands` | Send a Google-Smart-Home-style command |
-| POST | `/openapi/smarthome/responseCommands` | Poll results of earlier commands |
-| GET | `/openapi/mqtt/userInfo/get/v2` | Fetch MQTT host, WebSocket path and credentials |
+| GET | `/openapi/smarthome/authList` | List autoriserte einingar |
+| POST | `/openapi/smarthome/getVehicleStatus` | Status for fleire einings-ID-ar |
+| POST | `/openapi/smarthome/sendCommands` | Send ein kommando i Google-Smart-Home-stil |
+| POST | `/openapi/smarthome/responseCommands` | Hent resultat av tidlegare kommandoar |
+| GET | `/openapi/mqtt/userInfo/get/v2` | Hent MQTT-vert, WebSocket-sti og legitimasjon |
 
-`MowerCommand` values are translated to the platform's command vocabulary:
+`MowerCommand`-verdiar blir omsette til kommandovokabularet til plattforma:
 
-| `MowerCommand` | Wire command | params |
+| `MowerCommand` | Kommando på leidninga | params |
 |---|---|---|
 | `START` | `action.devices.commands.StartStop` | `{"on": true}` |
 | `STOP` | `action.devices.commands.StartStop` | `{"on": false}` |
@@ -62,22 +62,23 @@ Endpoints used:
 | `RESUME` | `action.devices.commands.PauseUnpause` | `{"on": true}` |
 | `DOCK` | `action.devices.commands.Dock` | — |
 
-A command result of `alreadyInState` is treated as success, so "start" on a
-mower that is already mowing does not raise.
+Kommandoresultatet `alreadyInState` blir rekna som vellykka, så «start» på ein
+klippar som alt klipper kastar ikkje unntak.
 
-## MQTT transport
+## MQTT-transport
 
-`NavimowMQTT` wraps `paho-mqtt` (callback API v2). The connection details come
-from `/openapi/mqtt/userInfo/get/v2`; `MowerClient.async_refresh_mqtt_info()`
-fetches them and stores `mqtt_broker`, `mqtt_username`, `mqtt_password` and
-`mqtt_ws_path` on the client.
+`NavimowMQTT` pakkar inn `paho-mqtt` (tilbakekall-API v2). Tilkoplingsdetaljane
+kjem frå `/openapi/mqtt/userInfo/get/v2`; `MowerClient.async_refresh_mqtt_info()`
+hentar dei og lagrar `mqtt_broker`, `mqtt_username`, `mqtt_password` og
+`mqtt_ws_path` på klienten.
 
-- Transport is **WebSocket + TLS** whenever a `ws_path` is given (which the
-  cloud always provides); port 443.
-- The client id is derived from the username, so one account can hold several
-  connections without clashing.
-- Keepalive defaults to 2400 s; automatic reconnect backs off from 1 s to 60 s.
-- On every (re)connect the client subscribes to, per device id:
+- Transporten er **WebSocket + TLS** når ein `ws_path` er gjeven (noko skya
+  alltid gjev); port 443.
+- Klient-ID-en blir avleidd av brukarnamnet, så éin konto kan ha fleire
+  tilkoplingar utan kollisjon.
+- Keepalive er 2400 s som standard; automatisk attkopling ventar frå 1 s opp
+  til 60 s.
+- Ved kvar (att)kopling abonnerer klienten på, per einings-ID:
 
   ```
   /downlink/vehicle/{device_id}/realtimeDate/state
@@ -85,40 +86,43 @@ fetches them and stores `mqtt_broker`, `mqtt_username`, `mqtt_password` and
   /downlink/vehicle/{device_id}/realtimeDate/attributes
   ```
 
-  With no device ids it falls back to the `+` wildcard.
+  Utan einings-ID-ar fell han tilbake til jokerteiknet `+`.
 
-- Incoming payloads are JSON; the device id from the topic is injected as
-  `device_id` before parsing into `DeviceStateMessage`, `DeviceEventMessage`
-  or `DeviceAttributesMessage`.
+- Innkomande lastar er JSON; einings-ID-en frå emnet blir lagd inn som
+  `device_id` før tolking til `DeviceStateMessage`, `DeviceEventMessage` eller
+  `DeviceAttributesMessage`.
 
-Paho runs its network loop in **its own thread**. Every callback that reaches
-your code is hopped onto the asyncio loop the SDK is bound to via
-`loop.call_soon_threadsafe(asyncio.create_task, coro)`. That is why the loop
-rules below matter.
+Paho køyrer nettverksløkka si i **ein eigen tråd**. Kvart tilbakekall som når
+koden din blir flytta over til asyncio-løkka SDK-en er bunden til, via
+`loop.call_soon_threadsafe(asyncio.create_task, coro)`. Difor er løkkereglane
+nedanfor viktige.
 
-## Event-loop ownership
+## Eigarskap til hendingsløkka
 
-- Pass `loop=` to bind an SDK object to a specific loop for its lifetime.
-- Otherwise the object binds to the **running** loop the first time connection
-  work happens (`connect()`, `async_connect()`, `connect_async()`).
-- Using an object from a different loop later raises
+- Send `loop=` for å binde eit SDK-objekt til ei bestemt løkke for heile
+  levetida.
+- Elles bind objektet seg til den **køyrande** løkka første gongen
+  tilkoplingsarbeid skjer (`connect()`, `async_connect()`, `connect_async()`).
+- Å bruke objektet frå ei anna løkke seinare kastar
   `RuntimeError("This SDK object is being used from a different event loop")`.
-- A closed loop is rejected up front.
-- Always `disconnect()` before closing the loop; otherwise MQTT callbacks are
-  dropped with a debug log.
+- Ei stengd løkke blir avvist med ein gong.
+- Kall alltid `disconnect()` før du stengjer løkka; elles blir MQTT-tilbakekall
+  kasta med ein feilsøkingslogg.
 
-See [Home Assistant and other event loops](event-loops.md) for patterns.
+Sjå [Home Assistant og andre hendingsløkker](event-loops.md) for mønster.
 
-## Placeholder pieces
+## Plasshaldarar
 
-Two parts of the codebase are still stubs and are documented for completeness
-only:
+To delar av kodebasen er framleis stubbar og er dokumenterte berre for
+fullstendig oversikt:
 
-- `MowerMQTT` (used by `MowerClient.subscribe_device_updates`) subscribes to
-  `device/{id}/status` — a TODO topic scheme. Use `NavimowSDK` for live data.
-- `NavimowCloud` parses topics of the form `navimow/{id}/{channel}`, whereas the
-  broker publishes `/downlink/vehicle/...`. The `Navimow` / `NavimowCloudDevice`
-  object model therefore does not receive live messages from the real broker
-  yet; it works with `NavimowSDK` caches or your own dispatch.
-- `NavimowSDK.start_mowing()` etc. publish to `navimow/{id}/command`. For
-  reliable control use the REST commands on `MowerClient`.
+- `MowerMQTT` (brukt av `MowerClient.subscribe_device_updates`) abonnerer på
+  `device/{id}/status` — eit TODO-emneskjema. Bruk `NavimowSDK` for
+  sanntidsdata.
+- `NavimowCloud` tolkar emne på forma `navimow/{id}/{kanal}`, medan meglaren
+  publiserer `/downlink/vehicle/...`. Objektmodellen `Navimow` /
+  `NavimowCloudDevice` tek difor enno ikkje imot sanntidsmeldingar frå den
+  verkelege meglaren; han fungerer med `NavimowSDK`-mellomlageret eller di eiga
+  utsending.
+- `NavimowSDK.start_mowing()` osb. publiserer til `navimow/{id}/command`. For
+  påliteleg styring brukar du REST-kommandoane på `MowerClient`.

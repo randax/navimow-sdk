@@ -1,34 +1,34 @@
-# Home Assistant and other event loops
+# Home Assistant og andre hendingsløkker
 
-The SDK is asyncio-native but MQTT callbacks originate on paho's network
-thread. Understanding how the two meet avoids the common `RuntimeError`s.
+SDK-en er asyncio-innfødd, men MQTT-tilbakekall oppstår på nettverkstråden til
+paho. Forstår du korleis dei to møtest, unngår du dei vanlege `RuntimeError`-ane.
 
-## The rules
+## Reglane
 
-1. An SDK object binds to **one** asyncio loop for its lifetime: the `loop=`
-   you pass, or the running loop at the first connect.
-2. Every MQTT callback is hopped onto that loop with
-   `call_soon_threadsafe(create_task, ...)`; your `on_state` etc. run **on the
-   loop**, not on the MQTT thread.
-3. Blocking helpers (`discover_devices()`, `start_mowing()`, `refresh_mqtt_info()`)
-   call `asyncio.run()` and therefore only work from synchronous code with no
-   loop running.
-4. `disconnect()` before the loop closes.
+1. Eit SDK-objekt bind seg til **éi** asyncio-løkke for heile levetida: `loop=`
+   du sender, eller den køyrande løkka ved første tilkopling.
+2. Kvart MQTT-tilbakekall blir flytta over til den løkka med
+   `call_soon_threadsafe(create_task, ...)`; `on_state` osb. køyrer **på løkka**,
+   ikkje på MQTT-tråden.
+3. Blokkerande hjelparar (`discover_devices()`, `start_mowing()`,
+   `refresh_mqtt_info()`) kallar `asyncio.run()` og fungerer difor berre frå
+   synkron kode utan køyrande løkke.
+4. `disconnect()` før løkka blir stengd.
 
-## Plain scripts
+## Vanlege skript
 
 ```python
-asyncio.run(main())        # create and use everything inside main()
+asyncio.run(main())        # lag og bruk alt inne i main()
 ```
 
-Do not create the SDK at module import time and then use it inside
-`asyncio.run` from several places — each `asyncio.run` is a new loop.
+Ikkje lag SDK-en ved modulimport og bruk han så inne i `asyncio.run` frå fleire
+stader — kvart `asyncio.run` er ei ny løkke.
 
 ## Home Assistant
 
-Create the client and SDK from a coroutine running on `hass.loop` (e.g. in
-`async_setup_entry`) so they bind to it automatically, or pass
-`loop=hass.loop` explicitly from a sync context:
+Lag klienten og SDK-en frå ein korutine som køyrer på `hass.loop` (t.d. i
+`async_setup_entry`), så bind dei seg til henne automatisk, eller send
+`loop=hass.loop` eksplisitt frå ein synkron kontekst:
 
 ```python
 from homeassistant.core import HomeAssistant, callback
@@ -54,7 +54,7 @@ async def async_setup_entry(hass: HomeAssistant, entry) -> bool:
 
     @callback
     def _on_state(msg):
-        # Already on hass.loop; safe to touch entities / dispatcher here.
+        # Alt på hass.loop; trygt å røre entitetar / dispatcher her.
         async_dispatcher_send(hass, f"navimow_state_{msg.device_id}", msg)
 
     sdk.on_state(_on_state)
@@ -65,11 +65,11 @@ async def async_setup_entry(hass: HomeAssistant, entry) -> bool:
     return True
 ```
 
-Because callbacks already run on `hass.loop`, you do **not** need
-`hass.add_job` / `call_soon_threadsafe` inside them. Keep them short; for I/O,
-`hass.async_create_task(coro)`.
+Sidan tilbakekalla alt køyrer på `hass.loop`, treng du **ikkje**
+`hass.add_job` / `call_soon_threadsafe` inne i dei. Hald dei korte; for I/O,
+bruk `hass.async_create_task(coro)`.
 
-Token refresh in HA:
+Fornying av teikn i HA:
 
 ```python
 async def _refresh(hass, client, sdk, oauth_session):
@@ -79,10 +79,10 @@ async def _refresh(hass, client, sdk, oauth_session):
     sdk.update_mqtt_credentials(auth_headers={"Authorization": f"Bearer {token}"})
 ```
 
-## Running the SDK on a background thread
+## Køyr SDK-en på ein bakgrunnstråd
 
-If your application is synchronous (e.g. a Tk GUI), run one loop on a thread
-and hand the SDK that loop:
+Er applikasjonen din synkron (t.d. eit Tk-grensesnitt), køyr éi løkke på ein
+tråd og gje SDK-en den løkka:
 
 ```python
 import asyncio, threading
@@ -93,15 +93,16 @@ threading.Thread(target=loop.run_forever, daemon=True).start()
 sdk = NavimowSDK(..., loop=loop)
 loop.call_soon_threadsafe(sdk.connect)
 
-# From the main thread:
+# Frå hovudtråden:
 fut = asyncio.run_coroutine_threadsafe(client.async_start_mowing(dev_id), loop)
 fut.result(timeout=10)
 ```
 
-## Python version notes
+## Merknader om Python-versjonar
 
-- 3.9: `aiohttp` is not installed; use `UrllibSession`.
-- 3.10–3.14: either transport works; `aiohttp` is pinned to a patched release.
-- 3.14 changed event-loop ownership semantics; the SDK's "bind at first
-  connect" behaviour is designed around that, which is why an explicit `loop=`
-  is the safest choice in long-running services.
+- 3.9: `aiohttp` blir ikkje installert; bruk `UrllibSession`.
+- 3.10–3.14: begge transportane fungerer; `aiohttp` er låst til ei lappa
+  utgåve.
+- 3.14 endra semantikken for eigarskap til hendingsløkka; «bind ved første
+  tilkopling»-åtferda til SDK-en er utforma rundt det, og difor er eit eksplisitt
+  `loop=` det tryggaste valet i langkøyrande tenester.

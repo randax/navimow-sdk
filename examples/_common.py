@@ -1,4 +1,4 @@
-"""Shared helpers for the example scripts."""
+"""Felles hjelparar for dømeskripta."""
 
 import os
 import sys
@@ -9,7 +9,7 @@ from mower_sdk import MowerClient, UrllibSession
 def env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
-        sys.exit(f"Set {name} in the environment (see docs/README.md)")
+        sys.exit(f"Set {name} i miljøet (sjå docs/README.md)")
     return value
 
 

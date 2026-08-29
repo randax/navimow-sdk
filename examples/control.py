@@ -1,4 +1,4 @@
-"""Tiny CLI: list | status <id> | start|pause|resume|dock <id>."""
+"""Liten CLI: list | status <id> | start|pause|resume|dock <id>."""
 
 import asyncio
 import sys
@@ -30,16 +30,16 @@ async def main(argv: list[str]) -> int:
             device_id = argv[1]
             if argv[0] == "status":
                 s = await client.async_get_device_status(device_id)
-                print(f"{s.status.value} battery={s.battery}% error={s.error_code.value}")
+                print(f"{s.status.value} batteri={s.battery}% feil={s.error_code.value}")
                 if s.position:
-                    print(f"position={s.position}")
+                    print(f"posisjon={s.position}")
                 return 0
 
             await ACTIONS[argv[0]](client, device_id)
-            print(f"{argv[0]} sent to {device_id}")
+            print(f"{argv[0]} sendt til {device_id}")
             return 0
         except MowerAPIError as err:
-            print(f"error: {err}", file=sys.stderr)
+            print(f"feil: {err}", file=sys.stderr)
             return 1
 
 

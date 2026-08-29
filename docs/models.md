@@ -1,9 +1,9 @@
-# Data models
+# Datamodellar
 
-All models are dataclasses in `mower_sdk.models` with `from_dict()` /
-`to_dict()`; unknown fields are preserved in `extra` where present.
+Alle modellane er dataklassar i `mower_sdk.models` med `from_dict()` /
+`to_dict()`; ukjende felt blir tekne vare på i `extra` der det finst.
 
-## Enums
+## Opprekningar
 
 ```python
 class MowerStatus(Enum):  IDLE, MOWING, PAUSED, DOCKED, CHARGING, ERROR, RETURNING, UNKNOWN
@@ -11,25 +11,25 @@ class MowerCommand(Enum): START, PAUSE, DOCK, RESUME, STOP
 class MowerError(Enum):   NONE, STUCK, LIFTED, RAIN, BATTERY_LOW, SENSOR_ERROR, MOTOR_ERROR, BLADE_ERROR, UNKNOWN
 ```
 
-Use `.value` for the string (`MowerStatus.MOWING.value == "mowing"`).
+Bruk `.value` for strengen (`MowerStatus.MOWING.value == "mowing"`).
 
-## `Device` (from `authList`)
+## `Device` (frå `authList`)
 
-| Field | Type | Notes |
+| Felt | Type | Merknad |
 |---|---|---|
-| `id` | `str` | Device id used by every other call |
-| `name` | `str` | User-visible name |
+| `id` | `str` | Einings-ID brukt av alle andre kall |
+| `name` | `str` | Namn synleg for brukaren |
 | `model` | `str` | |
 | `firmware_version` | `str` | |
 | `serial_number` | `str` | |
 | `mac_address` | `str \| None` | |
 | `online` | `bool` | |
-| `product_key`, `device_name`, `iot_id` | `str \| None` | IoT platform identifiers |
-| `extra` | `dict \| None` | Unmodelled fields |
+| `product_key`, `device_name`, `iot_id` | `str \| None` | Identifikatorar frå IoT-plattforma |
+| `extra` | `dict \| None` | Umodellerte felt |
 
-## `DeviceStatus` (REST snapshot)
+## `DeviceStatus` (REST-augneblinksbilete)
 
-| Field | Type |
+| Felt | Type |
 |---|---|
 | `device_id` | `str` |
 | `status` | `MowerStatus` |
@@ -37,30 +37,30 @@ Use `.value` for the string (`MowerStatus.MOWING.value == "mowing"`).
 | `position` | `{"lat": float, "lng": float} \| None` |
 | `error_code` | `MowerError` |
 | `error_message` | `str \| None` |
-| `mowing_time`, `total_mowing_time` | seconds, `int \| None` |
+| `mowing_time`, `total_mowing_time` | sekund, `int \| None` |
 | `signal_strength` | `int \| None` |
 | `timestamp` | `int \| None` |
 | `extra` | `dict \| None` |
 
-## MQTT messages
+## MQTT-meldingar
 
-### `DeviceStateMessage` — topic `…/realtimeDate/state`
+### `DeviceStateMessage` — emne `…/realtimeDate/state`
 
-| Field | Type | Notes |
+| Felt | Type | Merknad |
 |---|---|---|
-| `device_id` | `str` | Injected from the topic |
+| `device_id` | `str` | Lagd inn frå emnet |
 | `timestamp` | `int \| None` | |
-| `state` | `str` | Normalised; the raw value is kept in `metrics["raw_state"]` when it differs |
-| `battery` | `int \| None` | Extracted from several possible payload shapes |
+| `state` | `str` | Normalisert; råverdien blir teken vare på i `metrics["raw_state"]` når han skil seg |
+| `battery` | `int \| None` | Henta ut frå fleire moglege lastformer |
 | `signal_strength` | `int \| None` | |
 | `position` | `dict \| None` | |
 | `error` | `dict \| None` | |
 | `metrics` | `dict \| None` | |
 
-Raw cloud states are normalised to `MowerStatus` values (`DeviceStatus` uses
-the same table):
+Råe skytilstandar blir normaliserte til `MowerStatus`-verdiar (`DeviceStatus`
+brukar same tabell):
 
-| Raw value | Canonical |
+| Råverdi | Kanonisk |
 |---|---|
 | `isDocked` | `docked` |
 | `isIdle`, `isIdel`, `Self-Checking` | `idle` |
@@ -70,29 +70,30 @@ the same table):
 | `error`, `Error`, `isLifted` | `error` |
 | `offline`, `Offline` | `unknown` |
 
-Unlisted values pass through unchanged (e.g. `charging`).
+Verdiar som ikkje står i lista går uendra gjennom (t.d. `charging`).
 
-### `DeviceEventMessage` — topic `…/realtimeDate/event`
+### `DeviceEventMessage` — emne `…/realtimeDate/event`
 
-`device_id`, `timestamp`, `type` (default `"system"`), `event`, `level`,
+`device_id`, `timestamp`, `type` (standard `"system"`), `event`, `level`,
 `message`, `params`.
 
-### `DeviceAttributesMessage` — topic `…/realtimeDate/attributes`
+### `DeviceAttributesMessage` — emne `…/realtimeDate/attributes`
 
 `device_id`, `attributes: dict`.
 
-### `DeviceCommandMessage` — outgoing
+### `DeviceCommandMessage` — utgåande
 
-`id`, `device_id`, `command`, `params`. Built for you by
-`NavimowSDK.start_mowing()` and friends.
+`id`, `device_id`, `command`, `params`. Blir bygd for deg av
+`NavimowSDK.start_mowing()` og dei andre kommandometodane.
 
 ### `Thing*Message`
 
-`ThingStatusMessage`, `ThingPropertiesMessage`, `ThingEventMessage` wrap the
-IoT-platform "thing model" envelope (`method`, `id`, `params: ThingParams`,
-`version`) for consumers that work with raw thing-model payloads.
+`ThingStatusMessage`, `ThingPropertiesMessage`, `ThingEventMessage` pakkar inn
+«thing model»-konvolutten frå IoT-plattforma (`method`, `id`,
+`params: ThingParams`, `version`) for konsumentar som arbeider med råe
+thing-model-lastar.
 
-## Example: turning a status into a Home Assistant-style state
+## Døme: gjer ein status om til ein tilstand i Home Assistant-stil
 
 ```python
 from mower_sdk import DeviceStatus, MowerError, MowerStatus

@@ -138,8 +138,8 @@ Runtime dependencies are resolved from PyPI during installation.
 
 ## Documentation
 
-Full guides — how the SDK works, REST and MQTT usage, data models, error
-handling, and Home Assistant / event-loop patterns — are in
+Full guides (in Nynorsk) — how the SDK works, REST and MQTT usage, data models,
+error handling, and Home Assistant / event-loop patterns — are in
 [`docs/`](docs/README.md). Runnable scripts are in [`examples/`](examples/).
 
 ## Quick Example

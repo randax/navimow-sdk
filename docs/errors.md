@@ -1,16 +1,16 @@
-# Errors and troubleshooting
+# Feil og feilsøking
 
-## Exception types
+## Unntakstypar
 
-| Exception | Raised by | Attributes |
+| Unntak | Kasta av | Eigenskapar |
 |---|---|---|
-| `MowerAPIError` | Every REST call | `message`, `status_code` (HTTP, may be `None`), `error_code` (platform code, may be `None`) |
-| `MowerAuthError` | Reserved for auth flows | `message` |
-| `MowerMQTTError` | `MowerMQTT` connect/subscribe | `message` |
-| `HTTPClientError` | `UrllibSession` transport | wrapped into `MowerAPIError` by the API layer |
-| `RuntimeError` | Loop misuse, `NavimowSDK` commands while disconnected | — |
+| `MowerAPIError` | Alle REST-kall | `message`, `status_code` (HTTP, kan vere `None`), `error_code` (plattformkode, kan vere `None`) |
+| `MowerAuthError` | Reservert for autentiseringsflytar | `message` |
+| `MowerMQTTError` | `MowerMQTT` tilkopling/abonnement | `message` |
+| `HTTPClientError` | `UrllibSession`-transporten | blir pakka inn i `MowerAPIError` av API-laget |
+| `RuntimeError` | Feil bruk av løkke, `NavimowSDK`-kommandoar utan tilkopling | — |
 
-Catch `MowerAPIError` for everything REST:
+Fang `MowerAPIError` for alt som gjeld REST:
 
 ```python
 from mower_sdk import MowerAPIError
@@ -19,49 +19,49 @@ try:
     await client.async_start_mowing(device_id)
 except MowerAPIError as err:
     if err.status_code == 401:
-        token = await refresh_token()          # your OAuth2 code
+        token = await refresh_token()          # din eigen OAuth2-kode
         client.update_token(token)
     elif err.error_code == "DEVICE_NOT_FOUND":
         ...
     else:
-        log.warning("command failed: %s", err)   # "msg | HTTP 400 | Error Code: X"
+        log.warning("kommando feila: %s", err)   # "melding | HTTP 400 | Error Code: X"
 ```
 
-`ERROR_MESSAGES` and `COMMAND_ERRORS` are lookup tables of platform messages
-(in Chinese, as served upstream); the `error_code` string is the stable thing to
-match on.
+`ERROR_MESSAGES` og `COMMAND_ERRORS` er oppslagstabellar med meldingar frå
+plattforma (på kinesisk, slik dei blir serverte oppstraums); `error_code`-strengen
+er det stabile å matche på.
 
-## Common problems
+## Vanlege problem
 
-**`MowerAPIError: … TOKEN_EXPIRED` with `status_code=401` before any request**
-— the token string is empty. Set it or call `update_token()`.
+**`MowerAPIError: … TOKEN_EXPIRED` med `status_code=401` før nokon førespurnad**
+— teiknstrengen er tom. Set han eller kall `update_token()`.
 
 **`RuntimeError: NavimowSDK.connect() requires a running event loop or an explicit loop= argument`**
-— you called `connect()` from plain synchronous code. Either run inside
-`asyncio.run(...)` or pass `loop=` at construction.
+— du kalla `connect()` frå vanleg synkron kode. Anten køyr inne i
+`asyncio.run(...)`, eller send `loop=` ved konstruksjon.
 
 **`RuntimeError: This SDK object is being used from a different event loop`**
-— an object bound to one loop was touched from another (common with
-`asyncio.run()` called twice). Create SDK objects inside the loop that will use
-them, or pass `loop=` explicitly.
+— eit objekt bunde til éi løkke vart rørt frå ei anna (vanleg når
+`asyncio.run()` blir kalla to gonger). Lag SDK-objekta inne i løkka som skal
+bruke dei, eller send `loop=` eksplisitt.
 
 **`asyncio.run() cannot be called from a running event loop`**
-— you used a blocking method (`discover_devices()`, `start_mowing()`, …) inside
-async code. Use the `async_*` variant.
+— du brukte ein blokkerande metode (`discover_devices()`, `start_mowing()`, …)
+inne i asynkron kode. Bruk `async_*`-varianten.
 
-**No MQTT messages arrive**
-— check, in order: `sdk.is_connected`; that `records=devices` was passed (so
-subscriptions target real ids); that the token is still valid (the WebSocket
-handshake carries it); and enable debug logging (below) to see topics and
-payloads.
+**Ingen MQTT-meldingar kjem**
+— sjekk, i denne rekkjefølgja: `sdk.is_connected`; at `records=devices` vart
+sendt (så abonnementa treffer verkelege ID-ar); at teiknet framleis er gyldig
+(WebSocket-handtrykket ber det); og slå på feilsøkingslogging (nedanfor) for å
+sjå emne og lastar.
 
-**Wildcard subscription warning** (`subscribing cloud topics with wildcard`)
-— `records` was empty. Pass the device list.
+**Åtvaring om jokerteikn-abonnement** (`subscribing cloud topics with wildcard`)
+— `records` var tom. Send einingslista.
 
 ## Logging
 
-The SDK logs under the `mower_sdk` namespace. Connection details are logged at
-INFO with secrets masked; raw payloads at DEBUG.
+SDK-en loggar under namnerommet `mower_sdk`. Tilkoplingsdetaljar blir logga på
+INFO med maskerte løyndomar; råe lastar på DEBUG.
 
 ```python
 import logging

@@ -1,32 +1,32 @@
-# Getting started
+# Kom i gang
 
-## 1. Install
+## 1. Installer
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 python -m pip install randax-navimow-sdk
 ```
 
-Or install a prebuilt wheel from the
-[releases page](https://github.com/randax/navimow-sdk/releases). See the
-top-level README for Raspberry Pi and `--user` variants.
+Eller installer eit ferdigbygd hjul frå
+[utgjevingssida](https://github.com/randax/navimow-sdk/releases). Sjå README på
+toppnivå for Raspberry Pi- og `--user`-variantar.
 
-## 2. Get an access token
+## 2. Skaff eit tilgangsteikn
 
-The SDK does **not** perform OAuth2. It expects a bearer token that is already
-valid for the Navimow OpenAPI. Obtain it through the platform's OAuth2 flow (or
-from an existing integration) and hand it to the SDK as a string. When the
-token is refreshed, call `client.update_token(new_token)`; nothing needs to be
-rebuilt.
+SDK-en utfører **ikkje** OAuth2. Han ventar eit berarteikn (bearer token) som
+alt er gyldig for Navimow OpenAPI. Skaff det gjennom OAuth2-flyten til
+plattforma (eller frå ei eksisterande integrasjon) og gje det til SDK-en som ein
+streng. Når teiknet blir fornya, kall `client.update_token(nytt_teikn)`; ingenting
+treng byggjast opp att.
 
-Two settings are required:
+To innstillingar er påkravde:
 
-| Value | Meaning |
+| Verdi | Tyding |
 |---|---|
-| `token` | Bearer token for the OpenAPI |
-| `api_base_url` | Base URL of the OpenAPI, e.g. `https://<host>`; the SDK appends `/openapi/...` |
+| `token` | Berarteikn for OpenAPI |
+| `api_base_url` | Grunn-URL for OpenAPI, t.d. `https://<vert>`; SDK-en legg til `/openapi/...` |
 
-## 3. List your mowers
+## 3. List klipparane dine
 
 ```python
 import asyncio
@@ -49,11 +49,11 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`UrllibSession` is the SDK's dependency-free HTTP transport. If you already
-have an `aiohttp.ClientSession` (Python 3.10+), pass that instead — the SDK
-only needs the `session.request(...)` context-manager shape.
+`UrllibSession` er den avhengnadsfrie HTTP-transporten til SDK-en. Har du alt
+ein `aiohttp.ClientSession` (Python 3.10+), kan du sende den i staden — SDK-en
+treng berre `session.request(...)`-forma med kontekstbehandlar.
 
-## 4. Read status and send a command
+## 4. Les status og send ein kommando
 
 ```python
 from mower_sdk import MowerAPIError, MowerStatus
@@ -61,30 +61,31 @@ from mower_sdk import MowerAPIError, MowerStatus
 
 async def mow_if_idle(client: MowerClient, device_id: str) -> None:
     status = await client.async_get_device_status(device_id)
-    print(f"{status.status.value}, battery {status.battery}%")
+    print(f"{status.status.value}, batteri {status.battery}%")
 
     if status.status in (MowerStatus.IDLE, MowerStatus.DOCKED, MowerStatus.CHARGING):
         try:
             await client.async_start_mowing(device_id)
         except MowerAPIError as err:
-            print("could not start:", err.error_code or err)
+            print("kunne ikkje starte:", err.error_code or err)
 ```
 
-Available commands on `MowerClient`: `async_start_mowing`, `async_pause_mowing`,
-`async_resume`, `async_dock` (each also has a blocking twin without the
-`async_` prefix — see [event loops](event-loops.md) before using those).
+Tilgjengelege kommandoar på `MowerClient`: `async_start_mowing`,
+`async_pause_mowing`, `async_resume`, `async_dock` (kvar har òg ein blokkerande
+tvilling utan `async_`-prefikset — les [hendingsløkker](event-loops.md) før du
+brukar dei).
 
-## 5. Stream live state
+## 5. Strøym sanntidstilstand
 
-REST status is a snapshot. For push updates use `NavimowSDK`, which connects
-to the account's MQTT broker over WebSocket:
+REST-status er eit augneblinksbilete. For push-oppdateringar brukar du
+`NavimowSDK`, som koplar seg til MQTT-meglaren til kontoen over WebSocket:
 
 ```python
 from mower_sdk import DeviceStateMessage, NavimowSDK
 
 
 async def watch(client: MowerClient) -> None:
-    info = await client.async_refresh_mqtt_info()   # fetch broker + credentials
+    info = await client.async_refresh_mqtt_info()   # hent meglar + legitimasjon
     sdk = NavimowSDK(
         broker=info["mqttHost"],
         port=443,
@@ -94,12 +95,13 @@ async def watch(client: MowerClient) -> None:
         auth_headers={"Authorization": f"Bearer {client.get_token()}"},
     )
     sdk.on_state(lambda s: print(s.device_id, s.state, s.battery))
-    sdk.connect()                       # binds to the running loop
+    sdk.connect()                       # bind til den køyrande løkka
     try:
         await asyncio.sleep(300)
     finally:
         sdk.disconnect()
 ```
 
-The full version, with event and attribute callbacks and reconnect handling,
-is in [Real-time updates](realtime.md) and `examples/watch_state.py`.
+Den fulle versjonen, med hendings- og attributt-tilbakekall og handtering av
+attkopling, finn du i [Sanntidsoppdateringar](realtime.md) og
+`examples/watch_state.py`.

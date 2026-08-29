@@ -1,6 +1,6 @@
-"""Start mowing as soon as the mower reports >= 80% battery while docked.
+"""Start klipping så snart klipparen melder >= 80 % batteri i ladestasjonen.
 
-Combines a REST snapshot with MQTT state updates.
+Kombinerer eit REST-augneblinksbilete med MQTT-tilstandsoppdateringar.
 """
 
 import asyncio
@@ -16,7 +16,7 @@ async def main() -> None:
         client = make_client(session)
         devices = await client.async_discover_devices()
         if not devices:
-            print("No devices.")
+            print("Ingen einingar.")
             return
         mower = devices[0]
         await client.async_refresh_mqtt_info()
@@ -43,13 +43,13 @@ async def main() -> None:
         sdk.on_state(on_state)
         sdk.connect()
         try:
-            print(f"Waiting for {mower.name} to reach {TARGET_BATTERY}% while docked…")
+            print(f"Ventar på at {mower.name} når {TARGET_BATTERY} % i ladestasjonen…")
             await ready.wait()
             try:
                 await client.async_start_mowing(mower.id)
-                print("Mowing started.")
+                print("Klipping starta.")
             except MowerAPIError as err:
-                print("Could not start:", err)
+                print("Kunne ikkje starte:", err)
         finally:
             sdk.disconnect()
 
