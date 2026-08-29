@@ -1460,3 +1460,97 @@ class ReviewRegressionTests(unittest.TestCase):
             await b
 
         loop.run_until_complete(scenario())
+
+    def test_cancelling_rebuilder_inside_lock_wakes_old_session_and_leaks_nothing(self):
+        import concurrent.futures
+        import time
+
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.addCleanup(executor.shutdown)
+        loop.set_default_executor(executor)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, username="u1", password="p1", loop=loop)
+
+        async def scenario():
+            a = asyncio.ensure_future(mqtt.async_subscribe_device("A"))
+            await asyncio.sleep(0)
+            c1 = mqtt._async_client
+            c1.on_connect(c1, None, None, 0)
+            blocker = loop.run_in_executor(None, time.sleep, 0.15)  # utføraren er oppteken
+            mqtt.configure_wss("broker", "/mqtt", "u2", "p2", None)  # tvingar ombygging
+            b = asyncio.ensure_future(mqtt.async_subscribe_device("B"))
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            b.cancel()  # avbrote medan nedrivinga står i kø i utføraren, inne i låsen
+            with self.assertRaises(asyncio.CancelledError):
+                await b
+            done, _ = await asyncio.wait({a}, timeout=0.5)
+            self.assertEqual({a}, done)  # A vart vekt, ikkje etterlaten
+            await blocker
+            await asyncio.sleep(0.05)
+            self.assertEqual(0, mqtt._async_waiters)
+            self.assertEqual({}, mqtt._callbacks)
+            self.assertEqual(1, c1.disconnect_calls)
+            # og ei ny økt kan framleis startast og rivast ned korrekt
+            c = asyncio.ensure_future(mqtt.async_subscribe_device("C"))
+            await asyncio.sleep(0)
+            c3 = mqtt._async_client
+            c3.on_connect(c3, None, None, 0)
+            await mqtt.async_disconnect()
+            await c
+            self.assertEqual(1, c3.loop_stop_calls)
+
+        loop.run_until_complete(scenario())
+
+    def test_in_lock_subscribe_failure_is_wrapped_and_forgets_callbacks(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+
+        async def scenario():
+            a = asyncio.ensure_future(mqtt.async_subscribe_device("A"))
+            await asyncio.sleep(0)
+            client = mqtt._async_client
+            client.on_connect(client, None, None, 0)
+            client.subscribe = mock.Mock(side_effect=ValueError("bad"))
+            with self.assertRaises(self.mqtt_module.MowerMQTTError):
+                await mqtt.async_subscribe_device("B")
+            self.assertNotIn("B", mqtt._callbacks)
+            self.assertIn("A", mqtt._callbacks)
+            mqtt._async_stop_event.set()
+            await a
+
+        loop.run_until_complete(scenario())
+
+    def test_async_disconnect_serialised_with_subscribe(self):
+        import concurrent.futures
+        import time
+
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.addCleanup(executor.shutdown)
+        loop.set_default_executor(executor)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+
+        async def scenario():
+            a = asyncio.ensure_future(mqtt.async_subscribe_device("A"))
+            await asyncio.sleep(0)
+            c1 = mqtt._async_client
+            c1.on_connect(c1, None, None, 0)
+            blocker = loop.run_in_executor(None, time.sleep, 0.1)
+            disconnecting = asyncio.ensure_future(mqtt.async_disconnect())
+            await asyncio.sleep(0)
+            b = asyncio.ensure_future(mqtt.async_subscribe_device("B"))  # ventar på låsen
+            await disconnecting
+            await blocker
+            await asyncio.sleep(0.05)
+            self.assertEqual(1, c1.loop_stop_calls)
+            # B fekk starte først etter at fråkoplinga var ferdig, i ei ny økt
+            c2 = mqtt._async_client
+            self.assertIsNot(c1, c2)
+            mqtt._async_stop_event.set()
+            await asyncio.gather(a, b)
+
+        loop.run_until_complete(scenario())
