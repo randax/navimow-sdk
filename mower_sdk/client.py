@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 
 from mower_sdk.api import MowerAPI
 from mower_sdk.http import HTTPSession
-from mower_sdk.models import Device, DeviceStatus, MowerCommand
+from mower_sdk.models import Device, DeviceLocationMessage, DeviceStatus, MowerCommand
 from mower_sdk.mqtt import MowerMQTT
 
 
@@ -32,6 +32,7 @@ class MowerClient:
         mqtt_username: Optional[str] = None,
         mqtt_password: Optional[str] = None,
         loop: Optional[asyncio.AbstractEventLoop] = None,
+        extra_topics: Optional[list[str]] = None,
     ) -> None:
         """Initialiser hovudklienten.
 
@@ -51,6 +52,7 @@ class MowerClient:
             username=mqtt_username,
             password=mqtt_password,
             loop=loop,
+            extra_topics=extra_topics,
         )
         self.mqtt_broker = mqtt_broker
         self.mqtt_port = mqtt_port
@@ -117,6 +119,8 @@ class MowerClient:
         self,
         device_id: str,
         callback: Optional[Callable[[DeviceStatus], None]] = None,
+        on_location: Optional[Callable[[DeviceLocationMessage], None]] = None,
+        subscribe_location: bool = False,
     ) -> None:
         """Abonner asynkront på statusoppdateringar for ei eining.
 
@@ -127,17 +131,21 @@ class MowerClient:
         Unntak:
             MowerMQTTError: Dersom abonnementet feilar
         """
+        self.mqtt.subscribe_location = subscribe_location
         await self.async_refresh_mqtt_info()
         await self.mqtt.async_connect()
         await self.mqtt.async_subscribe_device(
             device_id=device_id,
             on_status_update=callback,
+            on_location=on_location,
         )
 
     def subscribe_device_updates(
         self,
         device_id: str,
         callback: Optional[Callable[[DeviceStatus], None]] = None,
+        on_location: Optional[Callable[[DeviceLocationMessage], None]] = None,
+        subscribe_location: bool = False,
     ) -> None:
         """Abonner synkront på statusoppdateringar for ei eining.
 
@@ -148,11 +156,13 @@ class MowerClient:
         Unntak:
             MowerMQTTError: Dersom abonnementet feilar
         """
+        self.mqtt.subscribe_location = subscribe_location
         self.refresh_mqtt_info()
         self.mqtt.connect()
         self.mqtt.subscribe_device(
             device_id=device_id,
             on_status_update=callback,
+            on_location=on_location,
         )
 
     async def async_start_mowing(self, device_id: str) -> dict[str, Any]:
@@ -277,6 +287,10 @@ class MowerClient:
             Einingsstatusen, eller `None` dersom han ikkje finst
         """
         return self.mqtt.get_cached_status(device_id)
+
+    def get_cached_location(self, device_id: str) -> Optional[DeviceLocationMessage]:
+        """Hent sist godtekne MQTT-posisjon for ei eining."""
+        return self.mqtt.get_cached_location(device_id)
 
     async def async_get_device_status(self, device_id: str) -> DeviceStatus:
         """Hent einingsstatus asynkront via API-et.

@@ -1,7 +1,7 @@
 # REST: oppdaging, status, kommandoar
 
 `MowerClient` er inngangen til dagleg bruk. Han eig ein `MowerAPI` (REST) og
-ein `MowerMQTT` (plasshaldar), og held det gjeldande teiknet.
+ein `MowerMQTT`, og held det gjeldande teiknet.
 
 ```python
 from mower_sdk import MowerClient, UrllibSession
@@ -19,11 +19,31 @@ Parametrar til konstruktøren:
 | `api_base_url` | `""` | Grunn-URL; avsluttande skråstrek blir fjerna |
 | `mqtt_broker`, `mqtt_port`, `mqtt_username`, `mqtt_password` | — | Valfrie; blir overskrivne av `async_refresh_mqtt_info()` |
 | `loop` | `None` | Eksplisitt asyncio-løkke for MQTT-sida |
+| `extra_topics` | `None` | Ekstra MQTT-emne som blir abonnerte ordrett |
 
 Kvar metode nedanfor finst i asynkron form (`async_*`) og blokkerande form. Dei
 blokkerande formene kallar `asyncio.run()` internt, så dei må **ikkje** kallast
 frå ei køyrande løkke. Føretrekk dei asynkrone formene overalt, unnateke i
 eingongsskript.
+
+## MQTT-oppdateringar
+
+`async_subscribe_device_updates()` og `subscribe_device_updates()` tek no
+`callback=None`, `on_location=None` og `subscribe_location=False`. Når
+`subscribe_location=True`, får `on_location` kvart godteke
+`DeviceLocationMessage`; meldingar med stilleståande nullposisjon eller eldre
+tidsstempel for same lesingstype blir filtrerte bort.
+
+```python
+await client.async_subscribe_device_updates(
+    device_id,
+    callback=handle_status,
+    on_location=handle_location,
+    subscribe_location=True,
+)
+
+location = client.get_cached_location(device_id)  # DeviceLocationMessage | None
+```
 
 ## Oppdag einingar
 

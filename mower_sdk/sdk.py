@@ -13,7 +13,10 @@ from mower_sdk.models import (
     DeviceAttributesMessage,
     DeviceCommandMessage,
     DeviceEventMessage,
+    DeviceLocationMessage,
     DeviceStateMessage,
+    LocationFilter,
+    parse_location_payload,
 )
 from mower_sdk.mqtt import NavimowMQTT
 
@@ -43,6 +46,8 @@ class NavimowSDK:
         keepalive_seconds: int = 2400,
         reconnect_min_delay: int = 1,
         reconnect_max_delay: int = 60,
+        subscribe_location: bool = False,
+        extra_topics: Optional[list[str]] = None,
     ) -> None:
         self._loop = loop
         self._mqtt = NavimowMQTT(
@@ -57,16 +62,23 @@ class NavimowSDK:
             keepalive_seconds=keepalive_seconds,
             reconnect_min_delay=reconnect_min_delay,
             reconnect_max_delay=reconnect_max_delay,
+            subscribe_location=subscribe_location,
+            extra_topics=extra_topics,
         )
         self._loop = self._mqtt.loop
         self._mqtt.on_message = self._on_mqtt_message
+        self._mqtt.on_raw = self._on_mqtt_raw
 
         self._state_callbacks: list[Callable[[DeviceStateMessage], None]] = []
         self._event_callbacks: list[Callable[[DeviceEventMessage], None]] = []
         self._attributes_callbacks: list[Callable[[DeviceAttributesMessage], None]] = []
+        self._location_callbacks: list[Callable[[DeviceLocationMessage], None]] = []
+        self._raw_callbacks: list[Callable[[str, bytes], None]] = []
 
         self._state_cache: dict[str, DeviceStateMessage] = {}
         self._attributes_cache: dict[str, DeviceAttributesMessage] = {}
+        self._location_cache: dict[str, DeviceLocationMessage] = {}
+        self._location_filter = LocationFilter()
 
     def connect(self) -> None:
         """Kople til MQTT-meglaren og start mottak."""
@@ -109,21 +121,32 @@ class NavimowSDK:
     def on_attributes(self, callback: Callable[[DeviceAttributesMessage], None]) -> None:
         self._attributes_callbacks.append(callback)
 
+    def on_location(self, callback: Callable[[DeviceLocationMessage], None]) -> None:
+        """Registrer tilbakekall for kvar godteken posisjonslesing."""
+        self._location_callbacks.append(callback)
+
+    def on_raw(self, callback: Callable[[str, bytes], None]) -> None:
+        """Registrer tilbakekall for alle råe MQTT-meldingar."""
+        self._raw_callbacks.append(callback)
+
     def get_cached_state(self, device_id: str) -> Optional[DeviceStateMessage]:
         return self._state_cache.get(device_id)
 
     def get_cached_attributes(self, device_id: str) -> Optional[DeviceAttributesMessage]:
         return self._attributes_cache.get(device_id)
 
+    def get_cached_location(self, device_id: str) -> Optional[DeviceLocationMessage]:
+        return self._location_cache.get(device_id)
+
+    async def _on_mqtt_raw(self, topic: str, payload: bytes) -> None:
+        for raw_callback in list(self._raw_callbacks):
+            raw_callback(topic, payload)
+
     async def _on_mqtt_message(self, topic: str, payload: bytes, device_id: str) -> None:
         try:
             payload_dict = json.loads(payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return
-        if not isinstance(payload_dict, dict):
-            return
-
-        payload_dict.setdefault("device_id", device_id)
         parts = topic.split("/")
         if parts and parts[0] == "":
             parts = parts[1:]
@@ -134,6 +157,20 @@ class NavimowSDK:
         if parts[3] != "realtimeDate":
             return
         channel = parts[4]
+
+        if channel == "location":
+            for location_message in self._location_filter.filter(
+                parse_location_payload(payload_dict, device_id)
+            ):
+                self._location_cache[device_id] = location_message
+                for location_callback in list(self._location_callbacks):
+                    location_callback(location_message)
+            return
+
+        if not isinstance(payload_dict, dict):
+            return
+
+        payload_dict.setdefault("device_id", device_id)
 
         if channel == "state":
             state_message = DeviceStateMessage.from_dict(payload_dict)

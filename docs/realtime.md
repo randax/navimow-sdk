@@ -1,7 +1,8 @@
 # Sanntidsoppdateringar over MQTT
 
 `NavimowSDK` gjev deg push-oppdateringar for tilstand, hendingar og attributtar,
-pluss mellomlager per eining med siste tilstand og attributtar.
+pluss mellomlager per eining med siste tilstand og attributtar. Posisjon er eit
+eige, frivillig abonnement.
 
 ## Skaff meglarlegitimasjon
 
@@ -73,11 +74,52 @@ def on_state(msg):
 Registrer tilbakekall før `connect()` slik at du ikkje går glipp av den første
 meldinga.
 
+## Posisjon (`location`-kanalen)
+
+Set `subscribe_location=True` for å abonnere på
+`/downlink/vehicle/{device_id}/realtimeDate/location`. Lasta kan innehalde éin
+eller fleire punkt; `on_location()` blir kalla éin gong for kvart godteke punkt,
+i same rekkjefølgje som det kom.
+
+```python
+from mower_sdk import DeviceLocationMessage
+
+sdk = NavimowSDK(..., records=devices, subscribe_location=True)
+
+def on_location(point: DeviceLocationMessage) -> None:
+    print(point.device_id, point.x, point.y, point.theta, point.mowing_percentage)
+
+sdk.on_location(on_location)
+```
+
+`x` og `y` er meter relativt til ladestasjonen, og `theta` er radianar.
+`get_cached_location(device_id)` gjev sist godtekne `DeviceLocationMessage`.
+Ein nulltrippel (`x`, `y` og `theta` alle nøyaktig `0.0`) er ein plasshaldar frå
+ein stilleståande klippar og blir kasta. Sidan meglaren kan forseinke eller
+omorganisere meldingar, blir eldre punkt kasta per `(device_id, type)` når dei
+har tidsstempel. Punkt utan `timestamp` eller `type` går alltid gjennom.
+
+Felta og leidningsforma er observerte gjennom tredjepartsadapteren
+`ioBroker.navimow`, ikkje ei offisiell spesifikasjon.
+
+## Ekstra emne og rå meldingar
+
+`extra_topics` abonnerer på kvart oppgjeve MQTT-emne ordrett. `on_raw()` får
+`(topic, bytes)` for **kvar** mottatt melding, også ukjende emne og meldingar
+utan kjend einings-ID. Råtilbakekall blir, som andre SDK-tilbakekall, køyrde på
+den bundne asyncio-løkka.
+
+```python
+sdk = NavimowSDK(..., extra_topics=["/downlink/vehicle/device-1/#"])
+sdk.on_raw(lambda topic, payload: print(topic, payload.decode("utf-8", "replace")))
+```
+
 ## Mellomlager
 
 ```python
 sdk.get_cached_state(device_id)        # DeviceStateMessage | None
 sdk.get_cached_attributes(device_id)   # DeviceAttributesMessage | None
+sdk.get_cached_location(device_id)     # DeviceLocationMessage | None
 sdk.is_connected                       # bool
 ```
 
@@ -101,7 +143,9 @@ Dette er trygt å kalle før ei hendingsløkke finst; attkoplinga blir utsett ti
 ## Fullstendig døme
 
 `examples/watch_state.py` set det saman: oppdag einingar, hent MQTT-info,
-abonner, skriv ut oppdateringar til Ctrl-C, kople frå ryddig.
+abonner, skriv ut oppdateringar til Ctrl-C, kople frå ryddig. Bruk `--location`
+for posisjonar, `--raw` for rå meldingar og `--discover` for å abonnere på alle
+emne per funnen eining (og samstundes skrive rå meldingar).
 
 ```python
 import asyncio, os, signal

@@ -3,9 +3,12 @@
 Definerer alle datamodellar som SDK-en bruker, inkludert opprekningar og dataklassar.
 """
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
+
+_LOGGER = logging.getLogger(__name__)
 
 _RAW_STATE_TO_CANONICAL: dict[str, str] = {
     "isDocked": "docked",
@@ -348,6 +351,43 @@ class DeviceStatus:
             extra=extra,
         )
 
+    @classmethod
+    def from_state_message(
+        cls, message: "DeviceStateMessage", fallback_status: Optional[MowerStatus] = None
+    ) -> "DeviceStatus":
+        """Gjer ei MQTT-tilstandsmelding om til den eldre statusmodellen."""
+        raw = message.raw or {}
+        has_state = any(key in raw for key in ("state", "status", "vehicleState"))
+        try:
+            status = MowerStatus(message.state)
+        except ValueError:
+            status = MowerStatus.UNKNOWN
+        if not has_state:
+            status = fallback_status or MowerStatus.UNKNOWN
+
+        known_keys = {
+            "device_id",
+            "id",
+            "timestamp",
+            "state",
+            "status",
+            "vehicleState",
+            "battery",
+            "capacityRemaining",
+            "descriptiveCapacityRemaining",
+            "signal_strength",
+        }
+        extra = {key: value for key, value in raw.items() if key not in known_keys} or None
+        return cls(
+            device_id=message.device_id,
+            status=status,
+            battery=message.battery or 0,
+            position=None,
+            signal_strength=message.signal_strength,
+            timestamp=message.timestamp,
+            extra=extra,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         """Gjer om til ei ordbok.
 
@@ -389,6 +429,7 @@ class DeviceStateMessage:
     position: Optional[dict[str, float]] = None
     error: Optional[dict[str, Any]] = None
     metrics: Optional[dict[str, Any]] = None
+    raw: Optional[dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceStateMessage":
@@ -409,6 +450,7 @@ class DeviceStateMessage:
             position=payload.get("position"),
             error=payload.get("error"),
             metrics=metrics or None,
+            raw=dict(payload),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -422,6 +464,119 @@ class DeviceStateMessage:
             "error": self.error,
             "metrics": self.metrics,
         }
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass
+class DeviceLocationMessage:
+    """Ei einskild posisjonslesing frå MQTT."""
+
+    device_id: str
+    x: Optional[float]
+    y: Optional[float]
+    theta: Optional[float]
+    timestamp: Optional[int]
+    type: Optional[str]
+    vehicle_state: Optional[int]
+    mowing_percentage: Optional[float]
+    subtotal_area: Optional[float]
+    mow_start_type: Optional[Any]
+    raw: dict[str, Any]
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "DeviceLocationMessage":
+        """Lag ei posisjonslesing frå den observerte leidningsforma."""
+        raw_type = payload.get("type")
+        return cls(
+            device_id=str(payload.get("device_id", "")),
+            x=_float_or_none(payload.get("postureX")),
+            y=_float_or_none(payload.get("postureY")),
+            theta=_float_or_none(payload.get("postureTheta")),
+            timestamp=_int_or_none(payload.get("time", payload.get("timestamp"))),
+            type=str(raw_type) if raw_type is not None else None,
+            vehicle_state=_int_or_none(payload.get("vehicleState")),
+            mowing_percentage=_float_or_none(payload.get("mowingPercentage")),
+            subtotal_area=_float_or_none(payload.get("subtotalArea")),
+            mow_start_type=payload.get("mowStartType"),
+            raw=dict(payload),
+        )
+
+    @property
+    def is_placeholder(self) -> bool:
+        """Sei om lesinga er klipparen sin stilleståande plasshaldar."""
+        return self.x == 0.0 and self.y == 0.0 and self.theta == 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "device_id": self.device_id,
+            "x": self.x,
+            "y": self.y,
+            "theta": self.theta,
+            "timestamp": self.timestamp,
+            "type": self.type,
+            "vehicle_state": self.vehicle_state,
+            "mowing_percentage": self.mowing_percentage,
+            "subtotal_area": self.subtotal_area,
+            "mow_start_type": self.mow_start_type,
+            "raw": self.raw,
+        }
+
+
+def parse_location_payload(payload: Any, device_id: str) -> list[DeviceLocationMessage]:
+    """Tolk éi eller fleire posisjonslesingar og set einings-ID frå MQTT-emnet."""
+    values = payload if isinstance(payload, list) else [payload]
+    points: list[DeviceLocationMessage] = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        point = DeviceLocationMessage.from_dict(value)
+        point.device_id = device_id
+        points.append(point)
+    return points
+
+
+class LocationFilter:
+    """Filtrer bort plasshaldarar og seint komne posisjonslesingar."""
+
+    def __init__(self) -> None:
+        self._newest_timestamps: dict[tuple[str, str], int] = {}
+
+    def filter(self, points: list[DeviceLocationMessage]) -> list[DeviceLocationMessage]:
+        accepted: list[DeviceLocationMessage] = []
+        for point in points:
+            if point.is_placeholder:
+                _LOGGER.debug("Dropping placeholder location for device %s", point.device_id)
+                continue
+            if point.timestamp is None or point.type is None:
+                accepted.append(point)
+                continue
+            key = (point.device_id, point.type)
+            newest = self._newest_timestamps.get(key)
+            if newest is not None and point.timestamp < newest:
+                _LOGGER.debug(
+                    "Dropping stale location for device %s type %s: %s < %s",
+                    point.device_id,
+                    point.type,
+                    point.timestamp,
+                    newest,
+                )
+                continue
+            self._newest_timestamps[key] = point.timestamp
+            accepted.append(point)
+        return accepted
 
 
 @dataclass
