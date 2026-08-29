@@ -1162,3 +1162,100 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertEqual(1, len(loop.calls))
         loop.drain()
         self.assertEqual(1, callback.call_count)
+
+    def test_normal_return_removes_device_callbacks(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+        cb_a = mock.Mock()
+
+        async def scenario():
+            task = asyncio.ensure_future(mqtt.async_subscribe_device("A", on_status_update=cb_a))
+            await asyncio.sleep(0)
+            client = mqtt._async_client
+            client.on_connect(client, None, None, 0)
+            client.on_disconnect(client, None, None, 0)
+            await task
+            self.assertNotIn("A", mqtt._callbacks)
+            self.assertEqual(0, mqtt._async_waiters)
+            # Ny økt for B må ikkje teikne opp A att
+            second = asyncio.ensure_future(mqtt.async_subscribe_device("B"))
+            await asyncio.sleep(0)
+            c2 = mqtt._async_client
+            c2.on_connect(c2, None, None, 0)
+            self.assertNotIn("/downlink/vehicle/A/realtimeDate/state", c2.subscriptions)
+            mqtt._async_stop_event.set()
+            await second
+
+        loop.run_until_complete(scenario())
+
+    def test_stale_on_disconnect_does_not_poison_new_session(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+
+        async def scenario():
+            first = asyncio.ensure_future(mqtt.async_subscribe_device("A"))
+            await asyncio.sleep(0)
+            c1 = mqtt._async_client
+            c1.on_connect(c1, None, None, 0)
+            c1.on_disconnect(c1, None, None, 0)
+            await first
+            second = asyncio.ensure_future(mqtt.async_subscribe_device("B"))
+            await asyncio.sleep(0)
+            c2 = mqtt._async_client
+            c2.on_connect(c2, None, None, 0)
+            c1.on_disconnect(c1, None, None, 0)  # seint tilbakekall frå gammal økt
+            self.assertTrue(mqtt._async_connected)
+            self.assertFalse(mqtt._async_stop_event.is_set())
+            third = asyncio.ensure_future(mqtt.async_subscribe_device("C"))
+            await asyncio.sleep(0)
+            self.assertIn("/downlink/vehicle/C/realtimeDate/state", c2.subscriptions)
+            mqtt._async_stop_event.set()
+            await asyncio.gather(second, third)
+
+        loop.run_until_complete(scenario())
+
+    def test_async_disconnect_wakes_all_waiters_and_stops_once(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+
+        async def scenario():
+            tasks = [asyncio.ensure_future(mqtt.async_subscribe_device(d)) for d in "ABC"]
+            await asyncio.sleep(0)
+            client = mqtt._async_client
+            client.on_connect(client, None, None, 0)
+            await mqtt.async_disconnect()
+            await asyncio.gather(*tasks)
+            self.assertEqual(0, mqtt._async_waiters)
+            self.assertEqual(1, client.disconnect_calls)
+            self.assertEqual(1, client.loop_stop_calls)
+            self.assertIsNone(mqtt._async_client)
+
+        loop.run_until_complete(scenario())
+
+    def test_subscribe_during_drop_window_starts_a_fresh_session(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+
+        async def scenario():
+            first = asyncio.ensure_future(mqtt.async_subscribe_device("A"))
+            await asyncio.sleep(0)
+            c1 = mqtt._async_client
+            c1.on_connect(c1, None, None, 0)
+            # paho-tråden har sett _async_connected=False, men stopp-hendinga er enno i kø
+            mqtt._async_connected = False
+            second = asyncio.ensure_future(mqtt.async_subscribe_device("B"))
+            for _ in range(5):
+                await asyncio.sleep(0)
+            self.assertIsNot(c1, mqtt._async_client)  # ny økt, ikkje den døyande
+            c2 = mqtt._async_client
+            c2.on_connect(c2, None, None, 0)
+            self.assertIn("/downlink/vehicle/B/realtimeDate/state", c2.subscriptions)
+            first.cancel()
+            mqtt._async_stop_event.set()
+            await asyncio.gather(first, second, return_exceptions=True)
+
+        loop.run_until_complete(scenario())
