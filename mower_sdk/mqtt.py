@@ -160,6 +160,10 @@ class MowerMQTT:
         username: MQTT-brukarnamn (valfritt)
         password: MQTT-passord (valfritt)
         status_cache: Mellombels lager for einingsstatus
+        location_cache: Siste posisjonslesing med koordinatar per eining
+        subscribe_location: Om posisjonskanalen skal abonnerast (frivillig)
+        extra_topics: Ekstra emne som blir abonnerte ordrett
+        on_raw: Synkront tilbakekall for alle råe meldingar
         _async_client: Asynkron MQTT-klient
         _sync_client: Synkron MQTT-klient
         _callbacks: Ordbok med tilbakekall
@@ -220,6 +224,7 @@ class MowerMQTT:
         self._async_location_pass_done = False
         self._async_waiters = 0
         self._async_session_lock: Optional[asyncio.Lock] = None
+        self._async_owned_devices: set[str] = set()
         self._async_signature: Optional[tuple[Any, ...]] = None
         self._callbacks: dict[str, dict[str, Optional[Callable[..., Any]]]] = {}
         self._connected = False
@@ -476,7 +481,12 @@ class MowerMQTT:
             self._sync_client.loop_start()
         except Exception as e:
             # Ikkje lat ein halvbygd klient lure idempotens-vernet ved neste forsøk.
-            self._sync_client = None
+            failed_client, self._sync_client = self._sync_client, None
+            if failed_client is not None:
+                try:
+                    _stop_paho_client(failed_client)
+                except Exception:
+                    _LOGGER.debug("Cleanup of failed sync MQTT client raised", exc_info=True)
             self._sync_signature = None
             self._connected = False
             raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_CONNECTION_FAILED']}: {str(e)}") from e
@@ -492,9 +502,13 @@ class MowerMQTT:
 
         Første kall byggjer MQTT-klienten; seinare kall (t.d. via `asyncio.gather` for
         fleire einingar) deler same klient og same økt. Kvart kall ventar til tilkoplinga
-        blir broten. Blir eitt kall avbrote, held økta fram for dei andre; først når det
-        siste kallet forlèt økta blir klienten stoppa. Å slå `subscribe_location` av att
-        fjernar ikkje alt teikna posisjonsemne før neste attkopling.
+        blir broten (eller `async_disconnect()` blir kalla). Blir tilkoplingsoppsettet
+        endra i mellomtida (t.d. nye legitimasjonar via `configure_wss`), blir økta bytt ut
+        med ei ny og kallet held fram på henne utan å returnere. Blir eitt kall avbrote,
+        held økta fram for dei andre; først når det siste kallet forlèt økta blir klienten
+        stoppa. Eitt aktivt kall per eining; eit samtidig kall for same eining blir avvist.
+        Å slå `subscribe_location` av att fjernar ikkje alt teikna posisjonsemne før neste
+        attkopling.
         """
         self._loop = _bind_event_loop(
             self._loop,
@@ -502,6 +516,14 @@ class MowerMQTT:
             missing_message="MowerMQTT.async_subscribe_device() requires a running event loop or an explicit loop= argument",
         )
         loop = self._loop
+        if device_id in self._async_owned_devices:
+            # To samtidige kall for same eining ville overskrive kvarandre sine tilbakekall
+            # og etterlate det første kallet utan abonnement. Avvis tydeleg i staden.
+            raise MowerMQTTError(
+                f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: device {device_id} already has an "
+                "active async subscription"
+            )
+        self._async_owned_devices.add(device_id)
         # Ta vare på tilbakekall for denne eininga (etter løkkebinding, så ei feilbinding
         # ikkje etterlet ei registrering; før abonnementet, så inga melding går tapt).
         my_callbacks: dict[str, Any] = {
@@ -546,6 +568,7 @@ class MowerMQTT:
             # Kallet er over (retur, feil eller avbrot): ikkje etterlat tilbakekalla, elles
             # teiknar neste økt eininga opp att og kallar ein død lyttar.
             self._forget_callbacks(device_id, my_callbacks)
+            self._async_owned_devices.discard(device_id)
 
     def _subscribe_new_device(self, device_id: str) -> None:
         """Abonner ei ny eining på den levande asynkrone klienten (med posisjons-bokføring)."""
@@ -594,7 +617,8 @@ class MowerMQTT:
         """
         client = self._async_client
         old_event = self._async_stop_event
-        if old_event is not None and replaced:
+        if old_event is not None and replaced and not old_event.is_set():
+            # Berre ei levande økt kan «bytast ut»; ei alt broten økt skal returnere.
             old_event.replaced = True
         self._async_client = None
         self._async_stop_event = None
@@ -1085,16 +1109,7 @@ class NavimowMQTT:
             self._schedule_call(self.on_disconnected)
 
     def _parse_topic(self, topic: str) -> Tuple[Optional[str], Optional[str]]:
-        parts = topic.split("/")
-        if parts and parts[0] == "":
-            parts = parts[1:]
-        if len(parts) != 5:
-            return None, None
-        if parts[0] != "downlink" or parts[1] != "vehicle":
-            return None, None
-        if parts[3] != "realtimeDate":
-            return None, None
-        return parts[2], parts[4]
+        return _parse_realtime_topic(topic)
 
     def _on_message(self, _client, _userdata, msg) -> None:
         topic = msg.topic

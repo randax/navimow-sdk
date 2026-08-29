@@ -1726,3 +1726,52 @@ class ReviewRegressionTests(unittest.TestCase):
         )
         self.assertIsNotNone(sdk.get_cached_state(DEVICE_ID))
         self.assertIsNone(sdk.get_cached_state("other"))
+
+    def test_genuine_drop_returns_even_if_another_subscribe_races_it(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+
+        async def scenario():
+            a = asyncio.ensure_future(mqtt.async_subscribe_device("A"))
+            await asyncio.sleep(0)
+            c1 = mqtt._async_client
+            c1.on_connect(c1, None, None, 0)
+            c1.on_disconnect(c1, None, None, 0)  # brot; stopp-hendinga blir sett på løkka
+            await asyncio.sleep(0)
+            b = asyncio.ensure_future(mqtt.async_subscribe_device("B"))  # kappløp med A
+            await asyncio.wait_for(a, timeout=1)  # A returnerer: brotet var ekte
+            for _ in range(5):
+                await asyncio.sleep(0)
+            c2 = mqtt._async_client
+            self.assertIsNot(c1, c2)
+            mqtt._async_stop_event.set()
+            await b
+
+        loop.run_until_complete(scenario())
+
+    def test_duplicate_async_subscription_for_same_device_is_refused(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+
+        async def scenario():
+            a = asyncio.ensure_future(
+                mqtt.async_subscribe_device("A", on_status_update=mock.Mock())
+            )
+            await asyncio.sleep(0)
+            with self.assertRaises(self.mqtt_module.MowerMQTTError):
+                await mqtt.async_subscribe_device("A")
+            self.assertIn("A", mqtt._callbacks)  # det første kallet er urørt
+            mqtt._async_stop_event.set()
+            await a
+            self.assertNotIn("A", mqtt._async_owned_devices)
+
+        loop.run_until_complete(scenario())
+
+    def test_failed_sync_connect_stops_a_started_client(self):
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883)
+        with mock.patch.object(FakePahoClient, "loop_start", side_effect=OSError("thread")):
+            with self.assertRaises(self.mqtt_module.MowerMQTTError):
+                mqtt.connect()
+        self.assertIsNone(mqtt._sync_client)

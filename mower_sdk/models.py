@@ -391,7 +391,7 @@ class DeviceStatus:
         meldingar, så manglande tilstand/batteri fell tilbake til dei bufra verdiane.
         """
         # Ei melding laga direkte (utan `raw`) blir bygd frå dei tolka felta.
-        raw = dict(message.raw) if message.raw else message.to_dict()
+        raw = dict(message.raw) if message.raw is not None else message.to_dict()
         raw.setdefault("device_id", message.device_id)
         status = cls.from_dict(raw)
 

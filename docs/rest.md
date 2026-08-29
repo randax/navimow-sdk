@@ -36,7 +36,10 @@ tidsstempel for same lesingstype blir filtrerte bort.
 
 `async_subscribe_device_updates()` køyrer til tilkoplinga blir broten (fleire
 einingar kan dele éi tilkopling ved å køyre kalla samstundes, t.d. med
-`asyncio.gather`), så start det som ei oppgåve:
+`asyncio.gather`), så start det som ei oppgåve. Blir MQTT-legitimasjonen
+frisk opp i mellomtida (det skjer ved kvart nytt kall), byter SDK-en økt i det
+stille og alle einingane held fram på den nye; kallet returnerer først når
+tilkoplinga verkeleg blir broten. Eitt aktivt kall per eining.
 
 ```python
 watcher = asyncio.create_task(
