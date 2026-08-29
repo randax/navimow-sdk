@@ -4,6 +4,7 @@ import asyncio
 import sys
 
 from _common import make_client, make_session
+
 from mower_sdk import MowerAPIError, MowerClient
 
 ACTIONS = {

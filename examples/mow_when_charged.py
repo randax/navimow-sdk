@@ -6,6 +6,7 @@ Kombinerer eit REST-augneblinksbilete med MQTT-tilstandsoppdateringar.
 import asyncio
 
 from _common import make_client, make_session
+
 from mower_sdk import DeviceStateMessage, MowerAPIError, NavimowSDK
 
 TARGET_BATTERY = 80

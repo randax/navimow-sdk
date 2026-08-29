@@ -5,6 +5,7 @@ import logging
 import signal
 
 from _common import make_client, make_session
+
 from mower_sdk import (
     DeviceAttributesMessage,
     DeviceEventMessage,
@@ -18,7 +19,9 @@ def on_state(msg: DeviceStateMessage) -> None:
 
 
 def on_event(msg: DeviceEventMessage) -> None:
-    print(f"[hending] {msg.device_id}: {msg.type}/{msg.event} {msg.level or ''} {msg.message or ''}")
+    print(
+        f"[hending] {msg.device_id}: {msg.type}/{msg.event} {msg.level or ''} {msg.message or ''}"
+    )
 
 
 def on_attributes(msg: DeviceAttributesMessage) -> None:
