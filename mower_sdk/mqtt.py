@@ -130,7 +130,12 @@ def _validate_topics(topics: Optional[list[str]]) -> list[str]:
     """Kontroller ekstra emne tidleg, så feil ikkje først dukkar opp på MQTT-tråden."""
     result: list[str] = []
     for topic in topics or []:
-        if not isinstance(topic, str) or not topic or "\x00" in topic or len(topic) > 65535:
+        if (
+            not isinstance(topic, str)
+            or not topic
+            or "\x00" in topic
+            or len(topic.encode("utf-8")) > 65535
+        ):
             raise ValueError(f"Invalid MQTT topic in extra_topics: {topic!r}")
         result.append(topic)
     return result
@@ -330,8 +335,9 @@ class MowerMQTT:
             else:
                 _call_soon_threadsafe(loop, callback, *args)
 
-        if self.on_raw:
-            dispatch(self.on_raw, topic, raw_payload)
+        on_raw = self.on_raw  # augneblinksbilete: kan bli nullstilt frå ein annan tråd
+        if on_raw:
+            dispatch(on_raw, topic, raw_payload)
 
         device_id, channel = _parse_realtime_topic(topic)
         if device_id is None or channel is None:
@@ -524,7 +530,6 @@ class MowerMQTT:
                 f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: device {device_id} already has an "
                 "active async subscription"
             )
-        self._async_owned_devices.add(device_id)
         # Ta vare på tilbakekall for denne eininga (etter løkkebinding, så ei feilbinding
         # ikkje etterlet ei registrering; før abonnementet, så inga melding går tapt).
         my_callbacks: dict[str, Any] = {
@@ -532,8 +537,9 @@ class MowerMQTT:
             "event": on_event,
             "location": on_location,
         }
-        self._register_callbacks(device_id, my_callbacks)
         try:
+            self._async_owned_devices.add(device_id)
+            self._register_callbacks(device_id, my_callbacks)
             while True:
                 if not self._async_session_is_live():
                     async with self._session_lock():
@@ -558,9 +564,16 @@ class MowerMQTT:
                 finally:
                     self._async_waiters -= 1
                     if self._async_waiters == 0 and self._async_stop_event is stop_event:
-                        async with self._session_lock():
-                            if self._async_waiters == 0 and self._async_stop_event is stop_event:
-                                await self._end_async_session_async(loop)
+                        # Skjerma: eit avbrot medan vi ventar på låsen skal ikkje hoppe over
+                        # nedrivinga og etterlate ein levande paho-tråd utan deltakarar.
+                        teardown = asyncio.ensure_future(
+                            self._end_session_if_last(loop, stop_event)
+                        )
+                        try:
+                            await asyncio.shield(teardown)
+                        except asyncio.CancelledError:
+                            teardown.add_done_callback(_log_teardown_result)
+                            raise
                 if not stop_event.replaced:
                     return  # tilkoplinga vart broten (eller fråkopla): kontrakten er å returnere
                 # Økta vart bytt ut (t.d. nye legitimasjonar): bli med i den nye i staden for
@@ -570,6 +583,13 @@ class MowerMQTT:
             # teiknar neste økt eininga opp att og kallar ein død lyttar.
             self._forget_callbacks(device_id, my_callbacks)
             self._async_owned_devices.discard(device_id)
+
+    async def _end_session_if_last(
+        self, loop: asyncio.AbstractEventLoop, stop_event: "_SessionEvent"
+    ) -> None:
+        async with self._session_lock():
+            if self._async_waiters == 0 and self._async_stop_event is stop_event:
+                await self._end_async_session_async(loop)
 
     def _subscribe_new_device(self, device_id: str) -> None:
         """Abonner ei ny eining på den levande asynkrone klienten (med posisjons-bokføring)."""

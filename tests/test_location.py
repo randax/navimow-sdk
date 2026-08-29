@@ -1869,3 +1869,41 @@ class ReviewRegressionTests(unittest.TestCase):
             await b
 
         loop.run_until_complete(scenario())
+
+    def test_cancel_while_blocked_on_session_lock_still_tears_down(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+
+        async def scenario():
+            a = asyncio.ensure_future(mqtt.async_subscribe_device("A"))
+            await asyncio.sleep(0)
+            client = mqtt._async_client
+            client.on_connect(client, None, None, 0)
+            # Ein annan held øktlåsen utan å avslutte eller bli med i økta
+            holder_release = asyncio.Event()
+
+            async def hold():
+                async with mqtt._session_lock():
+                    await holder_release.wait()
+
+            holder = asyncio.ensure_future(hold())
+            await asyncio.sleep(0)
+            mqtt._async_stop_event.set()  # A vaknar og blokkerer på låsen i finally
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            a.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await a
+            holder_release.set()
+            await holder
+            await asyncio.sleep(0.05)
+            self.assertIsNone(mqtt._async_client)  # nedrivinga skjedde likevel
+            self.assertEqual(1, client.loop_stop_calls)
+
+        loop.run_until_complete(scenario())
+
+    def test_extra_topic_length_is_validated_in_bytes(self):
+        long_topic = "æ" * 40000  # 80 000 byte i UTF-8, men berre 40 000 teikn
+        with self.assertRaises(ValueError):
+            self.mqtt_module.MowerMQTT("broker", 1883, extra_topics=[long_topic])
