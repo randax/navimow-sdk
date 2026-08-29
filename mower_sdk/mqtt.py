@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import threading
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal, Optional, Tuple
@@ -206,6 +207,8 @@ class MowerMQTT:
         self.subscribe_location = subscribe_location
         self.extra_topics = _validate_topics(extra_topics)
         self._location_filter = LocationFilter()
+        # Både den synkrone og den asynkrone paho-tråden kan handsame meldingar samstundes.
+        self._state_lock = threading.Lock()
         self._location_pass_done = False
         self._sync_signature: Optional[tuple[Any, ...]] = None
         self.on_raw: Optional[Callable[[str, bytes], None]] = None
@@ -344,13 +347,14 @@ class MowerMQTT:
             state_payload = dict(payload)
             state_payload.setdefault("device_id", device_id)
             message = DeviceStateMessage.from_dict(state_payload)
-            cached = self.status_cache.get(device_id)
-            status = DeviceStatus.from_state_message(
-                message,
-                fallback_status=cached.status if cached else None,
-                fallback_battery=cached.battery if cached else None,
-            )
-            self.status_cache[device_id] = status
+            with self._state_lock:
+                cached = self.status_cache.get(device_id)
+                status = DeviceStatus.from_state_message(
+                    message,
+                    fallback_status=cached.status if cached else None,
+                    fallback_battery=cached.battery if cached else None,
+                )
+                self.status_cache[device_id] = status
             callback = callbacks.get("status")
             if callback:
                 dispatch(callback, status)
@@ -362,10 +366,15 @@ class MowerMQTT:
             return
         if channel == "location":
             callback = callbacks.get("location")
-            for point in self._location_filter.filter(parse_location_payload(payload, device_id)):
-                if point.x is not None and point.y is not None:
-                    self.location_cache[device_id] = point
-                if callback:
+            with self._state_lock:
+                # Filter og mellomlager under lås: vassmerket må ikkje gå bakover når to
+                # paho-trådar leverer samstundes.
+                points = self._location_filter.filter(parse_location_payload(payload, device_id))
+                for point in points:
+                    if point.x is not None and point.y is not None:
+                        self.location_cache[device_id] = point
+            if callback:
+                for point in points:
                     dispatch(callback, point)
 
     def _make_on_message(
@@ -484,21 +493,20 @@ class MowerMQTT:
         siste kallet forlèt økta blir klienten stoppa. Å slå `subscribe_location` av att
         fjernar ikkje alt teikna posisjonsemne før neste attkopling.
         """
-        # Ta vare på tilbakekall for denne eininga (før abonnementet, så ingen melding går tapt).
-        self._callbacks[device_id] = {
-            "status": on_status_update,
-            "event": on_event,
-            "location": on_location,
-        }
-
         self._loop = _bind_event_loop(
             self._loop,
             owner="MowerMQTT",
             missing_message="MowerMQTT.async_subscribe_device() requires a running event loop or an explicit loop= argument",
         )
         loop = self._loop
-
-        my_callbacks = self._callbacks[device_id]
+        # Ta vare på tilbakekall for denne eininga (etter løkkebinding, så ei feilbinding
+        # ikkje etterlet ei registrering; før abonnementet, så inga melding går tapt).
+        my_callbacks: dict[str, Any] = {
+            "status": on_status_update,
+            "event": on_event,
+            "location": on_location,
+        }
+        self._callbacks[device_id] = my_callbacks
         try:
             if not self._async_session_is_live():
                 async with self._session_lock():

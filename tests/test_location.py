@@ -1554,3 +1554,65 @@ class ReviewRegressionTests(unittest.TestCase):
             await asyncio.gather(a, b)
 
         loop.run_until_complete(scenario())
+
+    def test_equal_timestamps_both_pass(self):
+        flt = self._filter()
+        accepted = flt.filter(self._point(time=200) + self._point(time=200, postureX=1.0))
+        self.assertEqual(2, len(accepted))
+
+    def test_mower_mqtt_ignores_non_dict_payloads_on_typed_channels(self):
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, subscribe_location=True)
+        status, event, location = mock.Mock(), mock.Mock(), mock.Mock()
+        mqtt.subscribe_device("A", on_status_update=status, on_event=event, on_location=location)
+        client = mqtt._sync_client
+        for topic in (mqtt._get_status_topic("A"), mqtt._get_event_topic("A")):
+            for payload in (b"[1]", b"7", b"null", b"junk"):
+                client.on_message(client, None, _make_message(topic, payload))
+        for payload in (b"7", b"null", b"junk", b'"x"'):
+            client.on_message(client, None, _make_message(mqtt._get_location_topic("A"), payload))
+        self.assertEqual(0, status.call_count)
+        self.assertEqual(0, event.call_count)
+        self.assertEqual(0, location.call_count)
+        self.assertEqual({}, mqtt.status_cache)
+        self.assertEqual({}, mqtt.location_cache)
+
+    def test_concurrent_paho_threads_never_regress_location_watermark(self):
+        import threading
+
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, subscribe_location=True)
+        received = []
+        lock = threading.Lock()
+
+        def on_location(point):
+            with lock:
+                received.append(point.timestamp)
+
+        mqtt.subscribe_device("A", on_location=on_location)
+        client = mqtt._sync_client
+        topic = mqtt._get_location_topic("A")
+
+        def deliver(start):
+            for i in range(start, start + 200):
+                client.on_message(client, None, _make_message(topic, dict(POSITION_POINT, time=i)))
+
+        threads = [threading.Thread(target=deliver, args=(k * 200,)) for k in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(received[-1], mqtt.get_cached_location("A").timestamp)
+        # Ingen godteke punkt er eldre enn det som alt er godteke (vassmerket går ikkje bakover)
+        self.assertEqual(max(received), received[-1])
+        self.assertEqual(len(received), len(set(received)))
+
+    def test_cross_loop_binding_failure_leaves_no_registration(self):
+        other = asyncio.new_event_loop()
+        self.addCleanup(other.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=other)
+
+        async def scenario():
+            with self.assertRaises(RuntimeError):
+                await mqtt.async_subscribe_device("A", on_status_update=mock.Mock())
+            self.assertEqual({}, mqtt._callbacks)
+
+        asyncio.run(scenario())
