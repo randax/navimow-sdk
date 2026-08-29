@@ -1838,3 +1838,34 @@ class ReviewRegressionTests(unittest.TestCase):
         t1.join()
         t2.join()
         self.assertEqual([], errors)
+
+    def test_drop_still_returns_when_subscribe_lands_before_queued_stop_event(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+
+        async def scenario():
+            a = asyncio.ensure_future(mqtt.async_subscribe_device("A"))
+            await asyncio.sleep(0)
+            c1 = mqtt._async_client
+            c1.on_connect(c1, None, None, 0)
+            # Simuler vindauget: paho-tråden har køyrt on_disconnect (flagg sette), men
+            # stopp-hendinga er enno ikkje køyrd på løkka.
+            deferred = []
+            with mock.patch.object(
+                self.mqtt_module, "_call_soon_threadsafe", lambda lp, fn, *a: deferred.append(fn)
+            ):
+                c1.on_disconnect(c1, None, None, 0)
+            self.assertFalse(mqtt._async_stop_event.is_set())
+            b = asyncio.ensure_future(mqtt.async_subscribe_device("B"))  # kjem først
+            for _ in range(5):
+                await asyncio.sleep(0)
+            for fn in deferred:
+                fn()  # den utsette stopp-hendinga
+            await asyncio.wait_for(a, timeout=1)  # A returnerer: brotet var ekte
+            c2 = mqtt._async_client
+            self.assertIsNot(c1, c2)
+            mqtt._async_stop_event.set()
+            await b
+
+        loop.run_until_complete(scenario())

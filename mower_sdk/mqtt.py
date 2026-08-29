@@ -628,8 +628,11 @@ class MowerMQTT:
         """
         client = self._async_client
         old_event = self._async_stop_event
-        if old_event is not None and replaced and not old_event.is_set():
-            # Berre ei levande økt kan «bytast ut»; ei alt broten økt skal returnere.
+        # Berre ei levande økt kan «bytast ut»; ei broten økt skal returnere. Liveness er
+        # avgjort av flagga paho-tråden set med ein gong (on_disconnect), ikkje av
+        # stopp-hendinga, som først blir sett seinare på løkka.
+        was_live = self._async_connected or not self._async_session_was_connected
+        if old_event is not None and replaced and was_live and not old_event.is_set():
             old_event.replaced = True
         self._async_client = None
         self._async_stop_event = None
