@@ -230,6 +230,7 @@ class MowerMQTT:
         self._async_waiters = 0
         self._async_session_lock: Optional[asyncio.Lock] = None
         self._async_owned_devices: set[str] = set()
+        self._sync_owned_devices: set[str] = set()
         self._async_signature: Optional[tuple[Any, ...]] = None
         self._callbacks: dict[str, dict[str, Optional[Callable[..., Any]]]] = {}
         self._connected = False
@@ -523,9 +524,9 @@ class MowerMQTT:
             missing_message="MowerMQTT.async_subscribe_device() requires a running event loop or an explicit loop= argument",
         )
         loop = self._loop
-        if device_id in self._async_owned_devices:
-            # To samtidige kall for same eining ville overskrive kvarandre sine tilbakekall
-            # og etterlate det første kallet utan abonnement. Avvis tydeleg i staden.
+        if device_id in self._async_owned_devices or device_id in self._sync_owned_devices:
+            # To samtidige kall for same eining (eller eitt synkront og eitt asynkront) ville
+            # overskrive kvarandre sine tilbakekall. Avvis tydeleg i staden.
             raise MowerMQTTError(
                 f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: device {device_id} already has an "
                 "active async subscription"
@@ -780,12 +781,18 @@ class MowerMQTT:
 
         # Registrer tilbakekalla FØR abonnementet, så ei melding som kjem med ein gong
         # (t.d. ei retained tilstandsmelding) ikkje blir kasta.
+        if device_id in self._async_owned_devices:
+            raise MowerMQTTError(
+                f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: device {device_id} already has an "
+                "active async subscription"
+            )
         owned: dict[str, Any] = {
             "status": on_status_update,
             "event": on_event,
             "location": on_location,
         }
         self._register_callbacks(device_id, owned)
+        self._sync_owned_devices.add(device_id)
         self._sync_loop()  # bind ei køyrande løkke no, om ei finst
         self._sync_client.on_message = self._make_on_message(self._bound_loop, "sync")
         try:
@@ -800,6 +807,7 @@ class MowerMQTT:
             # Elles tek on_connect seg av abonnementet når tilkoplinga er oppe.
         except Exception as e:
             self._forget_callbacks(device_id, owned)
+            self._sync_owned_devices.discard(device_id)
             raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}") from e
 
     def _bound_loop(self) -> Optional[asyncio.AbstractEventLoop]:
@@ -840,6 +848,9 @@ class MowerMQTT:
             self._sync_client = None
         self._connected = False
         self._location_pass_done = False
+        # Synkrone registreringar lever vidare (connect() teiknar dei opp att), men dei
+        # sperrar ikkje lenger for eit asynkront kall for same eining.
+        self._sync_owned_devices.clear()
 
 
 class NavimowMQTT:

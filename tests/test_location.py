@@ -1907,3 +1907,44 @@ class ReviewRegressionTests(unittest.TestCase):
         long_topic = "æ" * 40000  # 80 000 byte i UTF-8, men berre 40 000 teikn
         with self.assertRaises(ValueError):
             self.mqtt_module.MowerMQTT("broker", 1883, extra_topics=[long_topic])
+
+    def test_mixed_sync_and_async_subscription_for_same_device_is_refused(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+        mqtt.subscribe_device("A", on_status_update=mock.Mock())
+
+        async def scenario():
+            with self.assertRaises(self.mqtt_module.MowerMQTTError):
+                await mqtt.async_subscribe_device("A")
+            b = asyncio.ensure_future(mqtt.async_subscribe_device("B"))
+            await asyncio.sleep(0)
+            with self.assertRaises(self.mqtt_module.MowerMQTTError):
+                mqtt.subscribe_device("B", on_status_update=mock.Mock())
+            mqtt._async_stop_event.set()
+            await b
+            mqtt.subscribe_device("B", on_status_update=mock.Mock())  # fritt att etter retur
+
+        loop.run_until_complete(scenario())
+
+    def test_sdk_ignores_scalar_and_null_location_payloads(self):
+        sdk = self.sdk_module.NavimowSDK("broker", 1883)
+        calls = []
+        sdk.on_location(calls.append)
+        for payload in (b"7", b"null", b'"x"', b"junk", b"[7, null]"):
+            asyncio.run(
+                sdk._on_mqtt_message(
+                    f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/location", payload, DEVICE_ID
+                )
+            )
+        self.assertEqual([], calls)
+        self.assertIsNone(sdk.get_cached_location(DEVICE_ID))
+
+    def test_direct_state_message_uses_fallbacks(self):
+        message = self.models.DeviceStateMessage(device_id=DEVICE_ID, timestamp=1, state="unknown")
+        status = self.models.DeviceStatus.from_state_message(
+            message, fallback_status=self.models.MowerStatus.MOWING, fallback_battery=42
+        )
+        self.assertEqual(42, status.battery)
+        # «unknown» er ein kjend kanonisk verdi og blir difor ikkje overstyrt av mellomlageret
+        self.assertEqual(self.models.MowerStatus.UNKNOWN, status.status)
