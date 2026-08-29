@@ -366,7 +366,9 @@ class MowerMQTT:
             raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_CONNECTION_FAILED']}: {str(e)}") from e
 
     def connect(self) -> None:
-        """Kople til MQTT-broker synkront."""
+        """Kople til MQTT-broker synkront. Idempotent: ein alt bygd klient blir attbrukt."""
+        if self._sync_client is not None:
+            return
         try:
             self._sync_client = self._build_client()
             _LOGGER.info(
@@ -414,7 +416,11 @@ class MowerMQTT:
         on_event: Optional[Callable[[dict[str, Any]], None]] = None,
         on_location: Optional[Callable[[DeviceLocationMessage], None]] = None,
     ) -> None:
-        """Abonner asynkront på status og hendingar for ei eining."""
+        """Abonner asynkront på status og hendingar for ei eining.
+
+        Kvart kall byggjer sin eigen MQTT-klient og ventar til tilkoplinga blir broten;
+        bruk eitt kall per eining, eller den synkrone stien for fleire einingar på éin klient.
+        """
         # Ta vare på tilbakekall for denne eininga (før abonnementet, så ingen melding går tapt).
         self._callbacks[device_id] = {
             "status": on_status_update,
@@ -454,7 +460,7 @@ class MowerMQTT:
                     self.port,
                     device_id,
                 )
-                self._subscribe_topics(_client, [device_id])
+                self._subscribe_topics(_client, list(self._callbacks))
 
             on_message = self._make_on_message(loop, "async")
 
@@ -511,7 +517,9 @@ class MowerMQTT:
         self._sync_client.on_message = self._make_on_message(self._sync_loop(), "sync")
         try:
             if self._connected:
-                self._subscribe_topics(self._sync_client, [device_id])
+                # Teikn opp alle registrerte einingar att, så ei nyleg påslått
+                # subscribe_location òg gjeld dei som alt var abonnerte.
+                self._subscribe_topics(self._sync_client, list(self._callbacks))
             # Elles tek on_connect seg av abonnementet når tilkoplinga er oppe.
         except Exception as e:
             raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}") from e

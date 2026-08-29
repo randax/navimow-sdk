@@ -66,7 +66,6 @@ class NavimowSDK:
         )
         self._loop = self._mqtt.loop
         self._mqtt.on_message = self._on_mqtt_message
-        self._mqtt.on_raw = self._on_mqtt_raw
 
         self._state_callbacks: list[Callable[[DeviceStateMessage], None]] = []
         self._event_callbacks: list[Callable[[DeviceEventMessage], None]] = []
@@ -127,6 +126,8 @@ class NavimowSDK:
     def on_raw(self, callback: Callable[[str, bytes], None]) -> None:
         """Registrer tilbakekall for alle råe MQTT-meldingar."""
         self._raw_callbacks.append(callback)
+        # Kopla til først når nokon lyttar, så vanleg drift ikkje lagar ei ekstra oppgåve per melding.
+        self._mqtt.on_raw = self._on_mqtt_raw
 
     def get_cached_state(self, device_id: str) -> Optional[DeviceStateMessage]:
         return self._state_cache.get(device_id)
@@ -165,7 +166,10 @@ class NavimowSDK:
                     # Framdriftspunkt utan koordinatar skal ikkje overskrive siste posisjon.
                     self._location_cache[device_id] = location_message
                 for location_callback in list(self._location_callbacks):
-                    location_callback(location_message)
+                    try:
+                        location_callback(location_message)
+                    except Exception:  # eit feilande tilbakekall skal ikkje stoppe resten
+                        _LOGGER.exception("Location callback failed for %s", device_id)
             return
 
         if not isinstance(payload_dict, dict):

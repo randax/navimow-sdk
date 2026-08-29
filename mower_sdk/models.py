@@ -29,6 +29,16 @@ _RAW_STATE_TO_CANONICAL: dict[str, str] = {
 }
 
 
+def _is_recognised_state(raw_state: Any) -> bool:
+    """Sei om råverdien er ein tilstand vi kjenner (kanonisk eller via oppslagstabellen)."""
+    if isinstance(raw_state, MowerStatus):
+        return True
+    if not isinstance(raw_state, str):
+        return False
+    canonical = _RAW_STATE_TO_CANONICAL.get(raw_state, raw_state)
+    return any(canonical == member.value for member in MowerStatus)
+
+
 def _normalize_state_value(raw_state: Any) -> str:
     """Normaliser skya eller rå klipparstatus til intern kanonisk status."""
     if isinstance(raw_state, MowerStatus):
@@ -39,7 +49,13 @@ def _normalize_state_value(raw_state: Any) -> str:
 
 
 def _extract_battery_value(data: dict[str, Any]) -> int:
-    """Hent batteriprosent frå fleire ulike lastformat."""
+    """Hent batteriprosent frå fleire ulike lastformat (0 når det ikkje finst)."""
+    value = _extract_battery_value_or_none(data)
+    return 0 if value is None else value
+
+
+def _extract_battery_value_or_none(data: dict[str, Any]) -> Optional[int]:
+    """Hent batteriprosent, eller None når lasta ikkje ber ein brukbar verdi."""
 
     def _to_int_or_none(value: Any) -> Optional[int]:
         try:
@@ -70,7 +86,7 @@ def _extract_battery_value(data: dict[str, Any]) -> int:
             if raw_value is not None:
                 return raw_value
 
-    return 0
+    return None
 
 
 class MowerStatus(Enum):
@@ -327,15 +343,13 @@ class DeviceStatus:
 
         battery = _extract_battery_value(data)
 
-        extra = data.get("extra") or {}
+        extra: dict[str, Any] = dict(data.get("extra") or {})
         if "vehicleState" in data:
             extra["vehicleState"] = data.get("vehicleState")
         if "descriptiveCapacityRemaining" in data:
             extra["descriptiveCapacityRemaining"] = data.get("descriptiveCapacityRemaining")
         if "capacityRemaining" in data:
             extra["capacityRemaining"] = data.get("capacityRemaining")
-        if not extra:
-            extra = None
 
         return cls(
             device_id=data.get("device_id") or data.get("id", ""),
@@ -348,7 +362,7 @@ class DeviceStatus:
             total_mowing_time=data.get("total_mowing_time"),
             signal_strength=data.get("signal_strength"),
             timestamp=data.get("timestamp"),
-            extra=extra,
+            extra=extra or None,
         )
 
     @classmethod
@@ -369,11 +383,13 @@ class DeviceStatus:
         status = cls.from_dict(raw)
 
         if status.status is MowerStatus.UNKNOWN and fallback_status is not None:
-            # Anten mangla tilstandsnøkkelen, eller verdien (t.d. numerisk vehicleState)
-            # er ukjend for oss; hald på den sist kjende tilstanden.
-            status.status = fallback_status
-        has_battery = any(key in raw for key in ("battery", "capacityRemaining"))
-        if not has_battery and fallback_battery is not None:
+            # Fall berre tilbake når tilstanden manglar eller er ukjend for oss (t.d.
+            # numerisk vehicleState). Ein eksplisitt kjend verdi som «offline» skal
+            # sleppe gjennom som UNKNOWN, elles maskerer vi at klipparen forsvann.
+            raw_state = raw.get("state") or raw.get("status") or raw.get("vehicleState")
+            if not _is_recognised_state(raw_state):
+                status.status = fallback_status
+        if _extract_battery_value_or_none(raw) is None and fallback_battery is not None:
             status.battery = fallback_battery
         return status
 
@@ -468,7 +484,7 @@ def _int_or_none(value: Any) -> Optional[int]:
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         pass
     try:
         return int(float(value))

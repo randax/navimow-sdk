@@ -670,3 +670,63 @@ class ReviewRegressionTests(unittest.TestCase):
         for (cls, name), prefix in expected.items():
             params = list(inspect.signature(getattr(cls, name)).parameters)
             self.assertEqual(prefix, params[: len(prefix)], f"{cls.__name__}.{name}")
+
+    def test_explicit_offline_state_is_not_masked_by_cache(self):
+        cached = self.models.DeviceStatus(DEVICE_ID, self.models.MowerStatus.MOWING, 80)
+        for raw in ("offline", "Offline"):
+            status = self._state_status({"state": raw}, cached)
+            self.assertEqual(self.models.MowerStatus.UNKNOWN, status.status, raw)
+
+    def test_unusable_battery_value_keeps_cached_battery(self):
+        cached = self.models.DeviceStatus(DEVICE_ID, self.models.MowerStatus.MOWING, 80)
+        for payload in ({"battery": None}, {"capacityRemaining": []}):
+            status = self._state_status(dict(payload, state="isRunning"), cached)
+            self.assertEqual(80, status.battery, payload)
+
+    def test_infinite_numbers_do_not_raise(self):
+        msg = self.models.DeviceLocationMessage.from_dict({"time": float("inf")})
+        self.assertIsNone(msg.timestamp)
+
+    def test_from_dict_does_not_mutate_caller_extra(self):
+        extra = {}
+        self.models.DeviceStatus.from_dict({"vehicleState": "isDocked", "extra": extra})
+        self.assertEqual({}, extra)
+
+    def test_mower_client_reuses_one_sync_client_for_two_devices(self):
+        from mower_sdk.client import MowerClient
+
+        client = MowerClient(session=mock.Mock(), token="t", mqtt_broker="broker")
+        with (
+            mock.patch.object(client, "refresh_mqtt_info", new=mock.Mock()),
+            mock.patch.object(
+                client.mqtt, "_build_client", wraps=client.mqtt._build_client
+            ) as build,
+        ):
+            client.subscribe_device_updates("A", callback=mock.Mock())
+            client.subscribe_device_updates("B", callback=mock.Mock(), subscribe_location=True)
+        self.assertEqual(1, build.call_count)
+
+    def test_enabling_location_later_subscribes_already_registered_devices(self):
+        mqtt, client = self._connected_mqtt()
+        mqtt.subscribe_device("A", on_status_update=mock.Mock())
+        mqtt.subscribe_location = True
+        mqtt.subscribe_device("B", on_status_update=mock.Mock())
+        self.assertIn("/downlink/vehicle/A/realtimeDate/location", client.subscriptions)
+
+    def test_failing_location_callback_does_not_stop_others(self):
+        import logging
+
+        sdk = self.sdk_module.NavimowSDK("broker", 1883)
+        received = []
+        logging.getLogger("mower_sdk.sdk").disabled = True
+        self.addCleanup(setattr, logging.getLogger("mower_sdk.sdk"), "disabled", False)
+        sdk.on_location(lambda _p: 1 / 0)
+        sdk.on_location(received.append)
+        asyncio.run(
+            sdk._on_mqtt_message(
+                f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/location",
+                json.dumps([POSITION_POINT, dict(POSITION_POINT, time=1755000001)]).encode(),
+                DEVICE_ID,
+            )
+        )
+        self.assertEqual(2, len(received))
