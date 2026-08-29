@@ -941,3 +941,43 @@ class ReviewRegressionTests(unittest.TestCase):
                 )
             )
         self.assertEqual(3, len(seen))
+
+    def test_device_status_from_dict_keeps_status_first_precedence(self):
+        status = self.models.DeviceStatus.from_dict({"status": "docked", "state": "mowing"})
+        self.assertEqual(self.models.MowerStatus.DOCKED, status.status)
+        message = self.models.DeviceStateMessage.from_dict({"status": "docked", "state": "mowing"})
+        self.assertEqual("mowing", message.state)
+
+    def test_navimow_mqtt_never_invokes_callables_on_paho_thread(self):
+        import threading
+
+        loop = _RecordingLoop()
+        mqtt = self.mqtt_module.NavimowMQTT("broker", 1883, None, None, [], loop=loop)
+        threads = []
+
+        class Hook:
+            def __call__(self, *args):
+                threads.append(threading.current_thread().name)
+
+                async def coro():
+                    return None
+
+                return coro()
+
+        mqtt.on_raw = Hook()
+        mqtt.on_message = Hook()
+        mqtt.on_ready = Hook()
+
+        def paho_thread():
+            mqtt._on_connect(mqtt.client, None, None, 0)
+            mqtt._on_message(
+                mqtt.client,
+                None,
+                _make_message(f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/state", {"state": "x"}),
+            )
+
+        t = threading.Thread(target=paho_thread, name="paho-net")
+        t.start()
+        t.join()
+        self.assertEqual([], threads)  # ingen brukarkode køyrde på paho-tråden
+        self.assertEqual(3, len(loop.calls))  # ready + raw + message, alle i kø

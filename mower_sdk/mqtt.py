@@ -879,12 +879,27 @@ class NavimowMQTT:
             self.client.unsubscribe(extra_topic)
 
     def _schedule(self, coro: Awaitable[None]) -> None:
+        """Planlegg ein alt oppretta korutine på løkka (behalden for kompatibilitet)."""
         if self.loop is None:
             _close_awaitable(coro)
             _LOGGER.debug("Event loop not running, skip scheduling MQTT callback")
             return
         if not _call_soon_threadsafe(self.loop, asyncio.create_task, coro):
             _close_awaitable(coro)
+
+    def _start_task(self, callback: Callable[..., Awaitable[None]], args: tuple[Any, ...]) -> None:
+        """Køyrer på løkka: kall tilbakekallet der og start korutinen det gjev."""
+        try:
+            asyncio.ensure_future(callback(*args))
+        except Exception:
+            _LOGGER.exception("MQTT callback failed to start")
+
+    def _schedule_call(self, callback: Callable[..., Awaitable[None]], *args: Any) -> None:
+        """Flytt både kallet og korutinen til løkka, så ingenting av brukarkode køyrer på paho-tråden."""
+        if self.loop is None:
+            _LOGGER.debug("Event loop not running, skip scheduling MQTT callback")
+            return
+        _call_soon_threadsafe(self.loop, self._start_task, callback, args)
 
     def _on_connect(self, _client, _userdata, _flags, reason_code, _properties=None) -> None:
         if _reason_code_is_failure(reason_code):
@@ -901,9 +916,9 @@ class NavimowMQTT:
             _LOGGER.exception("NavimowMQTT subscribe failed after connect")
 
         if self.on_connected is not None:
-            self._schedule(self.on_connected())
+            self._schedule_call(self.on_connected)
         if self.on_ready is not None:
-            self._schedule(self.on_ready())
+            self._schedule_call(self.on_ready)
 
     def _on_disconnect(
         self, _client, _userdata, _flags, reason_code=None, _properties=None
@@ -915,7 +930,7 @@ class NavimowMQTT:
             reason_code,
         )
         if self.on_disconnected is not None:
-            self._schedule(self.on_disconnected())
+            self._schedule_call(self.on_disconnected)
 
     def _parse_topic(self, topic: str) -> Tuple[Optional[str], Optional[str]]:
         parts = topic.split("/")
@@ -946,7 +961,7 @@ class NavimowMQTT:
             device_id,
         )
         if self.on_raw is not None:
-            self._schedule(self.on_raw(topic, payload_bytes))
+            self._schedule_call(self.on_raw, topic, payload_bytes)
         try:
             payload = json.loads(payload_bytes.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
@@ -957,7 +972,7 @@ class NavimowMQTT:
             payload_bytes = json.dumps(payload).encode("utf-8")
 
         if self.on_message is not None and device_id:
-            self._schedule(self.on_message(topic, payload_bytes, device_id))
+            self._schedule_call(self.on_message, topic, payload_bytes, device_id)
 
     def publish_command(self, device_id: str, payload: dict[str, Any]) -> None:
         topic = f"navimow/{device_id}/command"

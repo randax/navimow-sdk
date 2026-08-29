@@ -115,9 +115,10 @@ class LoopBindingTests(unittest.TestCase):
 
         self.assertEqual(1, len(loop.calls))
         callback, args = loop.calls[0]
-        self.assertIs(callback, asyncio.create_task)
-        self.assertEqual(1, len(args))
-        args[0].close()
+        # Sjølve kallet av on_ready skjer først på løkka, ikkje på paho-tråden.
+        self.assertEqual(callback, mqtt._start_task)
+        self.assertEqual((on_ready, ()), args)
+        self.assertEqual([], scheduled)
 
 
 class RunningLoopBindingTests(unittest.IsolatedAsyncioTestCase):

@@ -29,8 +29,14 @@ _RAW_STATE_TO_CANONICAL: dict[str, str] = {
 }
 
 
-def state_source(data: dict[str, Any]) -> Any:
-    """Den eine staden som avgjer kva nøkkel tilstanden blir lesen frå."""
+def state_source(data: dict[str, Any], prefer_status: bool = False) -> Any:
+    """Den eine staden som avgjer kva nøkkel tilstanden blir lesen frå.
+
+    `DeviceStatus` (REST) har alltid føretrekt `status` framfor `state`; MQTT-
+    tilstandsmeldingar føretrekkjer `state`. Same prioritet som før på begge stader.
+    """
+    if prefer_status:
+        return data.get("status") or data.get("state") or data.get("vehicleState")
     return data.get("state") or data.get("status") or data.get("vehicleState")
 
 
@@ -333,7 +339,7 @@ class DeviceStatus:
         Retur:
             Ein DeviceStatus-instans
         """
-        status_source = state_source(data)
+        status_source = state_source(data, prefer_status=True)
         normalized_state = _normalize_state_value(status_source)
         try:
             status = MowerStatus(normalized_state)
@@ -392,7 +398,7 @@ class DeviceStatus:
             # Fall berre tilbake når tilstanden manglar eller er ukjend for oss (t.d.
             # numerisk vehicleState). Ein eksplisitt kjend verdi som «offline» skal
             # sleppe gjennom som UNKNOWN, elles maskerer vi at klipparen forsvann.
-            raw_state = state_source(raw)
+            raw_state = state_source(raw, prefer_status=True)
             if not is_recognised_state(raw_state):
                 status.status = fallback_status
         if extract_battery_value_or_none(raw) is None and fallback_battery is not None:
