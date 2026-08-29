@@ -1775,3 +1775,66 @@ class ReviewRegressionTests(unittest.TestCase):
             with self.assertRaises(self.mqtt_module.MowerMQTTError):
                 mqtt.connect()
         self.assertIsNone(mqtt._sync_client)
+
+    def test_async_loop_start_failure_after_connect_disconnects_client(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+        seen = []
+        real_build = mqtt._build_client
+
+        def tracking_build():
+            client = real_build()
+            seen.append(client)
+            return client
+
+        mqtt._build_client = tracking_build
+
+        async def scenario():
+            with mock.patch.object(FakePahoClient, "loop_start", side_effect=OSError("thread")):
+                with self.assertRaises(self.mqtt_module.MowerMQTTError):
+                    await mqtt.async_subscribe_device("A")
+            self.assertEqual(1, len(seen[0].connect_calls))
+            self.assertEqual(1, seen[0].disconnect_calls)
+            self.assertIsNone(mqtt._async_client)
+            task = asyncio.ensure_future(mqtt.async_subscribe_device("A"))
+            await asyncio.sleep(0)
+            self.assertEqual(2, len(seen))  # rein ny klient ved nytt forsøk
+            mqtt._async_stop_event.set()
+            await task
+
+        loop.run_until_complete(scenario())
+
+    def test_untyped_newer_then_typed_older_both_pass(self):
+        flt = self._filter()
+        untyped = dict(POSITION_POINT, time=300)
+        untyped.pop("type")
+        accepted = flt.filter(
+            self.models.parse_location_payload(untyped, DEVICE_ID) + self._point(time=199)
+        )
+        self.assertEqual([300, 199], [p.timestamp for p in accepted])
+
+    def test_registry_snapshot_is_safe_while_registering_from_another_thread(self):
+        import threading
+
+        mqtt, client = self._connected_mqtt()
+        errors = []
+
+        def churn():
+            for i in range(2000):
+                mqtt.subscribe_device(f"D{i % 50}", on_status_update=mock.Mock())
+
+        def reconnect():
+            try:
+                for _ in range(200):
+                    client.on_connect(client, None, None, 0)
+            except Exception as e:  # pragma: no cover - feilen er sjølve funnet
+                errors.append(e)
+
+        t1 = threading.Thread(target=churn)
+        t2 = threading.Thread(target=reconnect)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        self.assertEqual([], errors)

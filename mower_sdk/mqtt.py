@@ -336,7 +336,8 @@ class MowerMQTT:
         device_id, channel = _parse_realtime_topic(topic)
         if device_id is None or channel is None:
             return
-        callbacks = self._callbacks.get(device_id)
+        with self._state_lock:
+            callbacks = self._callbacks.get(device_id)
         if callbacks is None:
             _LOGGER.debug("MQTT message for unregistered device: topic=%s", topic)
             return
@@ -463,7 +464,7 @@ class MowerMQTT:
                 )
                 # Abonnementa overlever ikkje ei ny økt; teikn dei opp att ved kvar (att)kopling.
                 try:
-                    self._subscribe_topics(client, list(self._callbacks))
+                    self._subscribe_topics(client, self._registered_devices())
                     self._location_pass_done = self.subscribe_location
                 except Exception:  # må ikkje drepe paho sin nettverkstråd
                     _LOGGER.exception("MQTT subscribe failed after connect (sync)")
@@ -531,7 +532,7 @@ class MowerMQTT:
             "event": on_event,
             "location": on_location,
         }
-        self._callbacks[device_id] = my_callbacks
+        self._register_callbacks(device_id, my_callbacks)
         try:
             while True:
                 if not self._async_session_is_live():
@@ -578,7 +579,7 @@ class MowerMQTT:
         try:
             if self.subscribe_location and not self._async_location_pass_done:
                 # Nyleg påslått subscribe_location: éin full pass over alle einingar.
-                self._subscribe_topics(client, list(self._callbacks))
+                self._subscribe_topics(client, self._registered_devices())
             else:
                 self._subscribe_topics(client, [device_id])
             self._async_location_pass_done = self.subscribe_location
@@ -602,10 +603,20 @@ class MowerMQTT:
             self._async_session_lock = asyncio.Lock()
         return self._async_session_lock
 
+    def _register_callbacks(self, device_id: str, owned: dict[str, Any]) -> None:
+        with self._state_lock:
+            self._callbacks[device_id] = owned
+
+    def _registered_devices(self) -> list[str]:
+        """Augneblinksbilete av registrerte einingar, trygt frå paho-tråden."""
+        with self._state_lock:
+            return list(self._callbacks)
+
     def _forget_callbacks(self, device_id: str, owned: dict[str, Any]) -> None:
         """Fjern tilbakekalla for eininga, men berre om dei framleis er våre eigne."""
-        if self._callbacks.get(device_id) is owned:
-            self._callbacks.pop(device_id, None)
+        with self._state_lock:
+            if self._callbacks.get(device_id) is owned:
+                self._callbacks.pop(device_id, None)
 
     async def _end_async_session_async(
         self, loop: asyncio.AbstractEventLoop, replaced: bool = False
@@ -652,6 +663,7 @@ class MowerMQTT:
         self._async_location_pass_done = False
         self._async_signature = self._connection_signature()
         started = False
+        connected = False
         try:
             client = self._build_client()
             self._async_client = client
@@ -677,7 +689,7 @@ class MowerMQTT:
                 self._async_session_was_connected = True
                 _LOGGER.info("MQTT connected (async): broker=%s port=%s", self.broker, self.port)
                 try:
-                    self._subscribe_topics(_client, list(self._callbacks))
+                    self._subscribe_topics(_client, self._registered_devices())
                     self._async_location_pass_done = self.subscribe_location
                 except Exception:  # må ikkje drepe paho sin nettverkstråd
                     _LOGGER.exception("MQTT subscribe failed after connect (async)")
@@ -702,6 +714,7 @@ class MowerMQTT:
                 device_id,
             )
             client.connect(self.broker, self.port, self.keepalive_seconds)
+            connected = True
             client.loop_start()
             started = True
         except Exception as e:
@@ -717,6 +730,12 @@ class MowerMQTT:
                 loop.run_in_executor(None, _stop_paho_client, failed_client).add_done_callback(
                     _log_teardown_result
                 )
+            elif failed_client is not None and connected:
+                # Tilkopla, men ingen tråd starta: lukk økta direkte (ingen join å vente på).
+                try:
+                    failed_client.disconnect()
+                except Exception:
+                    _LOGGER.debug("Cleanup of connected-but-unstarted client raised", exc_info=True)
             stop_event.set()
             raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}") from e
 
@@ -743,7 +762,7 @@ class MowerMQTT:
             "event": on_event,
             "location": on_location,
         }
-        self._callbacks[device_id] = owned
+        self._register_callbacks(device_id, owned)
         self._sync_loop()  # bind ei køyrande løkke no, om ei finst
         self._sync_client.on_message = self._make_on_message(self._bound_loop, "sync")
         try:
@@ -751,7 +770,7 @@ class MowerMQTT:
                 if self.subscribe_location and not self._location_pass_done:
                     # Nyleg påslått subscribe_location: éin full pass så òg dei som alt var
                     # abonnerte får posisjonsemnet.
-                    self._subscribe_topics(self._sync_client, list(self._callbacks))
+                    self._subscribe_topics(self._sync_client, self._registered_devices())
                 else:
                     self._subscribe_topics(self._sync_client, [device_id])
                 self._location_pass_done = self.subscribe_location
