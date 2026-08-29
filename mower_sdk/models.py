@@ -394,6 +394,8 @@ class DeviceStatus:
         raw.setdefault("device_id", message.device_id)
         status = cls.from_dict(raw)
 
+        # Merk: her gjeld REST-prioriteten (status før state), som `from_dict` alltid har hatt;
+        # `DeviceStateMessage` sjølv føretrekkjer `state`.
         if status.status is MowerStatus.UNKNOWN and fallback_status is not None:
             # Fall berre tilbake når tilstanden manglar eller er ukjend for oss (t.d.
             # numerisk vehicleState). Ein eksplisitt kjend verdi som «offline» skal
@@ -482,6 +484,8 @@ class DeviceStateMessage:
 
 
 def _float_or_none(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
     try:
         return float(value)
     except (TypeError, ValueError):

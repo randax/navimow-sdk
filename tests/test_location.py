@@ -1022,11 +1022,11 @@ class ReviewRegressionTests(unittest.TestCase):
             await asyncio.sleep(0)
             client = mqtt._async_client
             client.on_connect(client, None, None, 0)
-            self.assertTrue(mqtt._connected)
+            self.assertTrue(mqtt._async_connected)
             client.on_disconnect(client, None, None, 0)
             await asyncio.sleep(0)
             await first  # kontrakt: kallet returnerer når tilkoplinga blir broten
-            self.assertFalse(mqtt._connected)
+            self.assertFalse(mqtt._async_connected)
             second = asyncio.ensure_future(mqtt.async_subscribe_device("B"))
             await asyncio.sleep(0)
             self.assertFalse(second.done())  # ikkje umiddelbar retur frå gamal hending
@@ -1035,3 +1035,59 @@ class ReviewRegressionTests(unittest.TestCase):
             await second
 
         loop.run_until_complete(scenario())
+
+    def test_cancelling_owner_keeps_session_alive_for_other_subscribers(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+        cb_b = mock.Mock()
+
+        async def scenario():
+            owner = asyncio.ensure_future(
+                mqtt.async_subscribe_device("A", on_status_update=mock.Mock())
+            )
+            await asyncio.sleep(0)
+            client = mqtt._async_client
+            client.on_connect(client, None, None, 0)
+            waiter = asyncio.ensure_future(mqtt.async_subscribe_device("B", on_status_update=cb_b))
+            await asyncio.sleep(0)
+
+            owner.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await owner
+
+            self.assertIs(client, mqtt._async_client)  # økta lever vidare
+            self.assertEqual(0, client.disconnect_calls)
+            self.assertNotIn("A", mqtt._callbacks)  # A sine tilbakekall er fjerna
+            client.on_message(
+                client, None, _make_message(mqtt._get_status_topic("B"), {"state": "isRunning"})
+            )
+            await asyncio.sleep(0)
+            self.assertEqual(1, cb_b.call_count)
+            self.assertFalse(waiter.done())
+
+            waiter.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await waiter
+            self.assertIsNone(mqtt._async_client)  # siste deltakar ute: økta stoppa
+            self.assertEqual(1, client.disconnect_calls)
+
+        loop.run_until_complete(scenario())
+
+    def test_sync_and_async_connected_flags_are_independent(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+        mqtt.connect()
+        sync_client = mqtt._sync_client
+        sync_client.on_connect(sync_client, None, None, 0)
+        self.assertTrue(mqtt._connected)
+        loop.run_until_complete(mqtt.async_disconnect())
+        self.assertTrue(mqtt._connected)  # den synkrone klienten er framleis oppe
+        mqtt.subscribe_device("B", on_status_update=mock.Mock())
+        self.assertIn("/downlink/vehicle/B/realtimeDate/state", sync_client.subscriptions)
+
+    def test_bool_posture_values_are_rejected(self):
+        msg = self.models.DeviceLocationMessage.from_dict({"postureX": True, "vehicleState": True})
+        self.assertIsNone(msg.x)
+        self.assertIsNone(msg.vehicle_state)

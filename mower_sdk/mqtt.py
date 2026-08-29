@@ -198,6 +198,8 @@ class MowerMQTT:
         self._async_client: Optional[mqtt_client.Client] = None
         self._sync_client: Optional[mqtt_client.Client] = None
         self._async_stop_event: Optional[asyncio.Event] = None
+        self._async_connected = False
+        self._async_waiters = 0
         self._callbacks: dict[str, dict[str, Optional[Callable[..., Any]]]] = {}
         self._connected = False
 
@@ -374,11 +376,7 @@ class MowerMQTT:
             owner="MowerMQTT",
             missing_message="MowerMQTT.async_connect() requires a running event loop or an explicit loop= argument",
         )
-        try:
-            # Sjølve tilkoplinga skjer ved abonnement; her stadfestar vi berre at løkka er gyldig.
-            self._connected = True
-        except Exception as e:
-            raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_CONNECTION_FAILED']}: {str(e)}") from e
+        # Sjølve tilkoplinga skjer ved abonnement; her stadfestar vi berre at løkka er gyldig.
 
     def _connection_signature(self) -> tuple[Any, ...]:
         """Alt som avgjer korleis paho-klienten blir bygd; endring krev ny klient."""
@@ -425,6 +423,7 @@ class MowerMQTT:
                 # Abonnementa overlever ikkje ei ny økt; teikn dei opp att ved kvar (att)kopling.
                 try:
                     self._subscribe_topics(client, list(self._callbacks))
+                    self._location_pass_done = self.subscribe_location
                 except Exception:  # må ikkje drepe paho sin nettverkstråd
                     _LOGGER.exception("MQTT subscribe failed after connect (sync)")
 
@@ -455,9 +454,10 @@ class MowerMQTT:
         """Abonner asynkront på status og hendingar for ei eining.
 
         Første kall byggjer MQTT-klienten; seinare kall (t.d. via `asyncio.gather` for
-        fleire einingar) deler same klient. Kvart kall ventar til tilkoplinga blir broten.
-        Å slå `subscribe_location` av att fjernar ikkje alt teikna posisjonsemne før neste
-        attkopling.
+        fleire einingar) deler same klient og same økt. Kvart kall ventar til tilkoplinga
+        blir broten. Blir eitt kall avbrote, held økta fram for dei andre; først når det
+        siste kallet forlèt økta blir klienten stoppa. Å slå `subscribe_location` av att
+        fjernar ikkje alt teikna posisjonsemne før neste attkopling.
         """
         # Ta vare på tilbakekall for denne eininga (før abonnementet, så ingen melding går tapt).
         self._callbacks[device_id] = {
@@ -472,30 +472,48 @@ class MowerMQTT:
             missing_message="MowerMQTT.async_subscribe_device() requires a running event loop or an explicit loop= argument",
         )
         loop = self._loop
-        if (
+
+        live_session = (
             self._async_client is not None
             and self._async_stop_event is not None
             and not self._async_stop_event.is_set()
-        ):
-            # Alt ein levande asynkron økt: del han. Abonner den nye eininga no om vi er
-            # tilkopla (elles tek on_connect det), og vent på same stopp-hending.
-            if self._connected:
-                try:
-                    self._subscribe_topics(self._async_client, [device_id])
-                except Exception as e:
-                    raise MowerMQTTError(
-                        f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}"
-                    ) from e
-            await self._async_stop_event.wait()
-            return
+        )
+        if not live_session:
+            self._start_async_session(device_id, loop)
+        elif self._async_connected:
+            assert self._async_client is not None
+            try:
+                self._subscribe_topics(self._async_client, [device_id])
+            except Exception as e:
+                self._callbacks.pop(device_id, None)
+                raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}") from e
+        # Elles tek on_connect seg av abonnementet når tilkoplinga er oppe.
+
+        stop_event = self._async_stop_event
+        assert stop_event is not None
+        self._async_waiters += 1
+        try:
+            await stop_event.wait()
+        except asyncio.CancelledError:
+            # Dette kallet gjev opp: fjern tilbakekalla for eininga si, og stopp økta berre
+            # om ingen andre ventar på henne lenger.
+            self._callbacks.pop(device_id, None)
+            raise
+        finally:
+            self._async_waiters -= 1
+            if self._async_waiters == 0 and self._async_stop_event is stop_event:
+                self._end_async_session()
+
+    def _start_async_session(self, device_id: str, loop: asyncio.AbstractEventLoop) -> None:
+        """Bygg og kople til ein ny asynkron klient; rydd opp fullstendig ved feil."""
         if self._async_client is not None:
             # Førre økt er over (stopp-hendinga er sett): rydd før vi byggjer ny.
-            self._async_client.loop_stop()
-            self._async_client.disconnect()
-            self._async_client = None
-        self._async_stop_event = asyncio.Event()
+            self._end_async_session()
+        stop_event = asyncio.Event()
+        self._async_stop_event = stop_event
         try:
-            self._async_client = self._build_client()
+            client = self._build_client()
+            self._async_client = client
             _LOGGER.info(
                 "MQTT connect details (async): transport=%s broker=%s port=%s ws_path=%s tls=%s username=%s auth_headers=%s device=%s",
                 "websockets" if self.ws_path else "tcp",
@@ -512,34 +530,23 @@ class MowerMQTT:
                 if _reason_code_is_failure(reason_code):
                     _LOGGER.error("MQTT connection failed: rc=%s", reason_code)
                     return
-                self._connected = True
-                _LOGGER.info(
-                    "MQTT connected (async): broker=%s port=%s device=%s",
-                    self.broker,
-                    self.port,
-                    device_id,
-                )
+                self._async_connected = True
+                _LOGGER.info("MQTT connected (async): broker=%s port=%s", self.broker, self.port)
                 try:
                     self._subscribe_topics(_client, list(self._callbacks))
                 except Exception:  # må ikkje drepe paho sin nettverkstråd
                     _LOGGER.exception("MQTT subscribe failed after connect (async)")
 
-            on_message = self._make_on_message(loop, "async")
-
             def on_disconnect(_client, _userdata, *disconnect_args) -> None:
                 _LOGGER.debug(
-                    "MQTT disconnected (async): broker=%s port=%s device=%s",
-                    self.broker,
-                    self.port,
-                    device_id,
+                    "MQTT disconnected (async): broker=%s port=%s", self.broker, self.port
                 )
-                self._connected = False
-                if self._async_stop_event:
-                    _call_soon_threadsafe(loop, self._async_stop_event.set)
+                self._async_connected = False
+                _call_soon_threadsafe(loop, stop_event.set)
 
-            self._async_client.on_connect = on_connect
-            self._async_client.on_message = on_message
-            self._async_client.on_disconnect = on_disconnect
+            client.on_connect = on_connect
+            client.on_message = self._make_on_message(loop, "async")
+            client.on_disconnect = on_disconnect
             _LOGGER.info(
                 "MQTT connecting (async): broker=%s port=%s ws_path=%s device=%s",
                 self.broker,
@@ -547,25 +554,27 @@ class MowerMQTT:
                 self.ws_path,
                 device_id,
             )
-            self._async_client.connect(self.broker, self.port, self.keepalive_seconds)
-            self._async_client.loop_start()
-
-            await self._async_stop_event.wait()
-        except BaseException as e:
-            # Feil eller avbrot: ikkje lat ein halvbygd klient blokkere seinare kall.
-            failed_client = self._async_client
-            self._async_client = None
-            self._async_stop_event = None
-            self._connected = False
-            if failed_client is not None:
-                try:
-                    failed_client.loop_stop()
-                    failed_client.disconnect()
-                except Exception:
-                    _LOGGER.debug("Cleanup of failed async MQTT client raised", exc_info=True)
-            if isinstance(e, asyncio.CancelledError):
-                raise
+            client.connect(self.broker, self.port, self.keepalive_seconds)
+            client.loop_start()
+        except Exception as e:
+            # Ikkje lat ein halvbygd klient blokkere seinare kall; vekk eventuelle ventarar.
+            self._callbacks.pop(device_id, None)
+            self._end_async_session()
+            stop_event.set()
             raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}") from e
+
+    def _end_async_session(self) -> None:
+        """Stopp den asynkrone klienten og nullstill øktstatusen."""
+        client = self._async_client
+        self._async_client = None
+        self._async_stop_event = None
+        self._async_connected = False
+        if client is not None:
+            try:
+                client.loop_stop()
+                client.disconnect()
+            except Exception:
+                _LOGGER.debug("Cleanup of async MQTT client raised", exc_info=True)
 
     def subscribe_device(
         self,
@@ -627,14 +636,10 @@ class MowerMQTT:
             owner="MowerMQTT",
             missing_message="MowerMQTT.async_disconnect() requires a running event loop or an explicit loop= argument",
         )
-        if self._async_client:
-            self._async_client.loop_stop()
-            self._async_client.disconnect()
-        if self._async_stop_event:
-            self._async_stop_event.set()
-        self._connected = False
-        self._async_client = None
-        self._async_stop_event = None
+        stop_event = self._async_stop_event
+        self._end_async_session()
+        if stop_event is not None:
+            stop_event.set()
 
     def disconnect(self) -> None:
         """Bryt MQTT-tilkopling synkront."""
