@@ -2,11 +2,17 @@ import subprocess
 import sys
 import typing
 import unittest
+from pathlib import Path
 
 from tests.support import import_fresh, import_source_module
 
 
 class PublicApiCompatibilityTests(unittest.TestCase):
+    def test_distribution_name_is_unique_to_the_fork(self):
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+
+        self.assertIn('name = "randax-navimow-sdk"', pyproject.read_text())
+
     def test_importing_public_package_succeeds(self):
         module = import_fresh("mower_sdk")
         self.assertIn("NavimowSDK", module.__all__)

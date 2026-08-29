@@ -2,6 +2,8 @@
 
 ## 0.2.0
 
+- Publish the fork as `randax-navimow-sdk` while retaining the `mower_sdk`
+  Python import package.
 - Support standard CPython 3.9.2 through 3.14.x, including Raspberry Pi OS on
   ARM32 and ARM64.
 - Resolve Python 3.9 annotations through `typing.get_type_hints()` and adapt
