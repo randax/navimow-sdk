@@ -107,6 +107,28 @@ python -m pip install -e ".[dev]"
 python -m unittest discover -s tests -v
 ```
 
+### Install from a wheel
+
+To build a self-contained wheel (`.whl`) that can be copied to and installed on
+any machine with a supported Python, run from a source checkout:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip build
+python -m build --wheel
+```
+
+The wheel is written to `dist/randax_navimow_sdk-<version>-py3-none-any.whl`.
+It is pure Python, so the same file works on macOS, Linux (including Raspberry
+Pi OS), and Windows. Install it with:
+
+```bash
+python -m pip install dist/randax_navimow_sdk-*.whl
+```
+
+Runtime dependencies are resolved from PyPI during installation.
+
 ## Quick Example
 
 ```python
