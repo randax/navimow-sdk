@@ -351,10 +351,16 @@ class MowerMQTT:
                     dispatch(callback, point)
 
     def _make_on_message(
-        self, loop: Optional[asyncio.AbstractEventLoop], label: str
+        self,
+        loop_getter: Callable[[], Optional[asyncio.AbstractEventLoop]],
+        label: str,
     ) -> Callable[..., None]:
+        """Lag paho-handsamaren. Løkka blir slått opp per melding, så ei løkke som blir
+        bunden etter at klienten vart bygd, òg blir brukt."""
+
         def on_message(_client: Any, _userdata: Any, msg: Any) -> None:
             try:
+                loop = loop_getter()
                 raw_payload = msg.payload or b""
                 _LOGGER.debug(
                     "MQTT message (%s): topic=%s bytes=%d payload=%s",
@@ -428,7 +434,7 @@ class MowerMQTT:
                     _LOGGER.exception("MQTT subscribe failed after connect (sync)")
 
             self._sync_client.on_connect = on_connect
-            self._sync_client.on_message = self._make_on_message(self._sync_loop(), "sync")
+            self._sync_client.on_message = self._make_on_message(self._bound_loop, "sync")
             _LOGGER.info(
                 "MQTT connecting (sync): broker=%s port=%s ws_path=%s",
                 self.broker,
@@ -545,7 +551,7 @@ class MowerMQTT:
                 _call_soon_threadsafe(loop, stop_event.set)
 
             client.on_connect = on_connect
-            client.on_message = self._make_on_message(loop, "async")
+            client.on_message = self._make_on_message(lambda: loop, "async")
             client.on_disconnect = on_disconnect
             _LOGGER.info(
                 "MQTT connecting (async): broker=%s port=%s ws_path=%s device=%s",
@@ -599,7 +605,7 @@ class MowerMQTT:
             "event": on_event,
             "location": on_location,
         }
-        self._sync_client.on_message = self._make_on_message(self._sync_loop(), "sync")
+        self._sync_client.on_message = self._make_on_message(self._bound_loop, "sync")
         try:
             if self._connected:
                 if self.subscribe_location and not self._location_pass_done:
@@ -612,6 +618,10 @@ class MowerMQTT:
             # Elles tek on_connect seg av abonnementet når tilkoplinga er oppe.
         except Exception as e:
             raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}") from e
+
+    def _bound_loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        """Den bundne løkka, om ei finst. Trygg å kalle frå paho-tråden."""
+        return self._loop
 
     def _sync_loop(self) -> Optional[asyncio.AbstractEventLoop]:
         """Løkka for den synkrone stien: bunden eller køyrande om ho finst, elles inga."""

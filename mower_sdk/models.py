@@ -394,14 +394,17 @@ class DeviceStatus:
         raw.setdefault("device_id", message.device_id)
         status = cls.from_dict(raw)
 
-        # Merk: her gjeld REST-prioriteten (status før state), som `from_dict` alltid har hatt;
-        # `DeviceStateMessage` sjølv føretrekkjer `state`.
+        # Tilstanden følgjer MQTT-meldinga (state før status), ikkje REST-prioriteten
+        # som `from_dict` elles brukar for resten av felta.
+        try:
+            status.status = MowerStatus(message.state)
+        except ValueError:
+            status.status = MowerStatus.UNKNOWN
         if status.status is MowerStatus.UNKNOWN and fallback_status is not None:
             # Fall berre tilbake når tilstanden manglar eller er ukjend for oss (t.d.
             # numerisk vehicleState). Ein eksplisitt kjend verdi som «offline» skal
             # sleppe gjennom som UNKNOWN, elles maskerer vi at klipparen forsvann.
-            raw_state = state_source(raw, prefer_status=True)
-            if not is_recognised_state(raw_state):
+            if not is_recognised_state(state_source(raw)):
                 status.status = fallback_status
         if extract_battery_value_or_none(raw) is None and fallback_battery is not None:
             status.battery = fallback_battery

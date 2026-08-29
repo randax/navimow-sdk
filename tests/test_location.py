@@ -505,6 +505,7 @@ class ReviewRegressionTests(unittest.TestCase):
 
     def setUp(self):
         self.models, self.mqtt_module, self.sdk_module = _load_modules()
+        self.client_module = importlib.import_module("mower_sdk.client")
 
     def _filter(self):
         return self.models.LocationFilter()
@@ -665,6 +666,46 @@ class ReviewRegressionTests(unittest.TestCase):
                 "device_id",
                 "on_status_update",
                 "on_event",
+            ],
+            (self.mqtt_module.MowerMQTT, "async_subscribe_device"): [
+                "self",
+                "device_id",
+                "on_status_update",
+                "on_event",
+            ],
+            (self.mqtt_module.MowerMQTT, "__init__"): [
+                "self",
+                "broker",
+                "port",
+                "username",
+                "password",
+                "ws_path",
+                "auth_headers",
+                "keepalive_seconds",
+                "reconnect_min_delay",
+                "reconnect_max_delay",
+                "loop",
+            ],
+            (self.client_module.MowerClient, "__init__"): [
+                "self",
+                "session",
+                "token",
+                "api_base_url",
+                "mqtt_broker",
+                "mqtt_port",
+                "mqtt_username",
+                "mqtt_password",
+                "loop",
+            ],
+            (self.client_module.MowerClient, "subscribe_device_updates"): [
+                "self",
+                "device_id",
+                "callback",
+            ],
+            (self.client_module.MowerClient, "async_subscribe_device_updates"): [
+                "self",
+                "device_id",
+                "callback",
             ],
         }
         for (cls, name), prefix in expected.items():
@@ -1091,3 +1132,33 @@ class ReviewRegressionTests(unittest.TestCase):
         msg = self.models.DeviceLocationMessage.from_dict({"postureX": True, "vehicleState": True})
         self.assertIsNone(msg.x)
         self.assertIsNone(msg.vehicle_state)
+
+    def test_mqtt_state_message_prefers_state_over_status_in_conversion(self):
+        status = self._state_status({"state": "isRunning", "status": "docked"})
+        self.assertEqual(self.models.MowerStatus.MOWING, status.status)
+
+    def test_untyped_reading_does_not_disturb_typed_watermark(self):
+        flt = self._filter()
+        untyped = dict(POSITION_POINT, time=150)
+        untyped.pop("type")
+        accepted = flt.filter(
+            self._point(time=200)
+            + self.models.parse_location_payload(untyped, DEVICE_ID)
+            + self._point(time=199)
+        )
+        self.assertEqual([200, 150], [p.timestamp for p in accepted])
+
+    def test_loop_bound_after_sync_subscribe_is_used_for_dispatch(self):
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883)
+        callback = mock.Mock()
+        mqtt.subscribe_device("A", on_status_update=callback)  # inga løkke enno
+        loop = _RecordingLoop()
+        mqtt._loop = loop  # løkka blir bunden seinare (t.d. via async_connect)
+        client = mqtt._sync_client
+        client.on_message(
+            client, None, _make_message(mqtt._get_status_topic("A"), {"state": "isRunning"})
+        )
+        self.assertEqual(0, callback.call_count)  # ikkje kalla på paho-tråden
+        self.assertEqual(1, len(loop.calls))
+        loop.drain()
+        self.assertEqual(1, callback.call_count)
