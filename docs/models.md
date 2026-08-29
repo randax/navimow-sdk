@@ -51,6 +51,11 @@ Use `.value` for the string (`MowerStatus.MOWING.value == "mowing"`).
 | `device_id` | `str` | Injected from the topic |
 | `timestamp` | `int \| None` | |
 | `state` | `str` | Normalised; the raw value is kept in `metrics["raw_state"]` when it differs |
+| `battery` | `int \| None` | Extracted from several possible payload shapes |
+| `signal_strength` | `int \| None` | |
+| `position` | `dict \| None` | |
+| `error` | `dict \| None` | |
+| `metrics` | `dict \| None` | |
 
 Raw cloud states are normalised to `MowerStatus` values (`DeviceStatus` uses
 the same table):
@@ -66,11 +71,6 @@ the same table):
 | `offline`, `Offline` | `unknown` |
 
 Unlisted values pass through unchanged (e.g. `charging`).
-| `battery` | `int \| None` | Extracted from several possible payload shapes |
-| `signal_strength` | `int \| None` | |
-| `position` | `dict \| None` | |
-| `error` | `dict \| None` | |
-| `metrics` | `dict \| None` | |
 
 ### `DeviceEventMessage` — topic `…/realtimeDate/event`
 
