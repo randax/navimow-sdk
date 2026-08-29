@@ -730,3 +730,63 @@ class ReviewRegressionTests(unittest.TestCase):
             )
         )
         self.assertEqual(2, len(received))
+
+    def test_state_message_without_raw_converts_from_fields(self):
+        message = self.models.DeviceStateMessage(
+            device_id=DEVICE_ID, timestamp=5, state="mowing", battery=77
+        )
+        status = self.models.DeviceStatus.from_state_message(message)
+        self.assertEqual(self.models.MowerStatus.MOWING, status.status)
+        self.assertEqual(77, status.battery)
+        self.assertEqual(5, status.timestamp)
+
+    def test_non_dict_payloads_on_typed_channels_are_ignored(self):
+        sdk = self.sdk_module.NavimowSDK("broker", 1883)
+        calls = []
+        sdk.on_state(calls.append)
+        sdk.on_event(calls.append)
+        sdk.on_attributes(calls.append)
+        for channel in ("state", "event", "attributes"):
+            for payload in (b"[1, 2]", b"42", b"not json"):
+                asyncio.run(
+                    sdk._on_mqtt_message(
+                        f"/downlink/vehicle/{DEVICE_ID}/realtimeDate/{channel}", payload, DEVICE_ID
+                    )
+                )
+        self.assertEqual([], calls)
+        self.assertIsNone(sdk.get_cached_state(DEVICE_ID))
+
+    def test_bound_loop_callbacks_are_queued_not_run_on_mqtt_thread(self):
+        import threading
+
+        loop = _RecordingLoop()
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop, subscribe_location=True)
+        seen_threads = []
+        record = lambda *_a: seen_threads.append(threading.current_thread().name)  # noqa: E731
+        mqtt.on_raw = record
+        mqtt.subscribe_device(
+            DEVICE_ID, on_status_update=record, on_event=record, on_location=record
+        )
+        client = mqtt._sync_client
+
+        def paho_thread():
+            client.on_message(
+                client,
+                None,
+                _make_message(mqtt._get_status_topic(DEVICE_ID), {"state": "isRunning"}),
+            )
+            client.on_message(
+                client, None, _make_message(mqtt._get_event_topic(DEVICE_ID), {"event": "x"})
+            )
+            client.on_message(
+                client, None, _make_message(mqtt._get_location_topic(DEVICE_ID), [POSITION_POINT])
+            )
+
+        t = threading.Thread(target=paho_thread, name="paho-net")
+        t.start()
+        t.join()
+
+        self.assertEqual([], seen_threads)  # ingenting køyrde inline på paho-tråden
+        self.assertEqual(6, len(loop.calls))  # 3 on_raw + status + event + location, alle i kø
+        loop.drain()
+        self.assertEqual(6, len(seen_threads))
