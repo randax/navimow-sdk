@@ -709,8 +709,19 @@ class ReviewRegressionTests(unittest.TestCase):
             ],
         }
         for (cls, name), prefix in expected.items():
-            params = list(inspect.signature(getattr(cls, name)).parameters)
-            self.assertEqual(prefix, params[: len(prefix)], f"{cls.__name__}.{name}")
+            params = list(inspect.signature(getattr(cls, name)).parameters.values())
+            self.assertEqual(
+                prefix, [p.name for p in params[: len(prefix)]], f"{cls.__name__}.{name}"
+            )
+            for param in params[: len(prefix)]:
+                self.assertEqual(
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD, param.kind, f"{cls.__name__}.{name}"
+                )
+            # Alt som er lagt til etter det gamle prefikset må ha standardverdi.
+            for param in params[len(prefix) :]:
+                self.assertIsNot(
+                    inspect.Parameter.empty, param.default, f"{cls.__name__}.{name}.{param.name}"
+                )
 
     def test_explicit_offline_state_is_not_masked_by_cache(self):
         cached = self.models.DeviceStatus(DEVICE_ID, self.models.MowerStatus.MOWING, 80)
@@ -1304,3 +1315,148 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertIsNone(msg.x)
         self.assertIsNone(msg.y)
         self.assertIsNone(msg.mowing_percentage)
+
+    def test_concurrent_subscribers_in_drop_window_share_one_new_session(self):
+        import threading
+        import time
+
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+        built = []
+        real_build = mqtt._build_client
+
+        def tracking_build():
+            client = real_build()
+            built.append(client)
+            return client
+
+        mqtt._build_client = tracking_build
+        slow = threading.Lock()
+
+        def slow_stop(client):
+            time.sleep(0.05)  # som paho sin loop_stop().join()
+            with slow:
+                client.disconnect()
+                client.loop_stop()
+
+        async def scenario():
+            with mock.patch.object(self.mqtt_module, "_stop_paho_client", slow_stop):
+                first = asyncio.ensure_future(mqtt.async_subscribe_device("A"))
+                await asyncio.sleep(0)
+                c1 = mqtt._async_client
+                c1.on_connect(c1, None, None, 0)
+                c1.on_disconnect(c1, None, None, 0)  # frå «paho-tråden»
+                await first
+                # To deltakarar samtidig medan den gamle økta blir riven ned
+                b = asyncio.ensure_future(mqtt.async_subscribe_device("B"))
+                c = asyncio.ensure_future(mqtt.async_subscribe_device("C"))
+                await asyncio.sleep(0.2)
+                live = mqtt._async_client
+                live.on_connect(live, None, None, 0)
+                await asyncio.sleep(0)
+                self.assertEqual(2, len(built))  # éi ny økt, ikkje to
+                await mqtt.async_disconnect()
+                done, _ = await asyncio.wait({b, c}, timeout=1)
+                self.assertEqual({b, c}, done)  # ingen heng
+                for client in built:
+                    self.assertEqual(1, client.disconnect_calls)
+                    self.assertEqual(1, client.loop_stop_calls)
+
+        loop.run_until_complete(scenario())
+
+    def test_cancel_during_pending_teardown_still_stops_client(self):
+        import concurrent.futures
+        import time
+
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.addCleanup(executor.shutdown)
+        loop.set_default_executor(executor)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+
+        async def scenario():
+            task = asyncio.ensure_future(mqtt.async_subscribe_device("A"))
+            await asyncio.sleep(0)
+            client = mqtt._async_client
+            client.on_connect(client, None, None, 0)
+            # Opptek den einaste utførartråden så nedrivinga må stå i kø
+            blocker = loop.run_in_executor(None, time.sleep, 0.15)
+            client.on_disconnect(client, None, None, 0)
+            await asyncio.sleep(0)  # stopp-hendinga køyrer; finally ventar i kø i utføraren
+            await asyncio.sleep(0)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            await blocker
+            await asyncio.sleep(0.05)
+            self.assertEqual(1, client.disconnect_calls)
+            self.assertEqual(1, client.loop_stop_calls)
+
+        loop.run_until_complete(scenario())
+
+    def test_navimow_mqtt_disconnect_keeps_original_order_without_disconnected_callback(self):
+        loop = _RecordingLoop()
+        mqtt = self.mqtt_module.NavimowMQTT("broker", 1883, None, None, [], loop=loop)
+        mqtt.on_disconnected = mock.Mock()
+        order = []
+        mqtt.client.loop_stop = lambda: order.append("loop_stop")
+        mqtt.client.disconnect = lambda: order.append("disconnect")
+        mqtt.disconnect()
+        self.assertEqual(["loop_stop", "disconnect"], order)
+        self.assertEqual([], loop.calls)  # ingen on_disconnected planlagd
+
+    def test_mower_client_forwards_location_arguments_to_both_wrappers(self):
+        from mower_sdk.client import MowerClient
+
+        client = MowerClient(session=mock.Mock(), token="t", mqtt_broker="broker")
+        on_location = mock.Mock()
+        with (
+            mock.patch.object(client, "refresh_mqtt_info"),
+            mock.patch.object(client.mqtt, "connect"),
+            mock.patch.object(client.mqtt, "subscribe_device") as sub,
+        ):
+            client.subscribe_device_updates("A", on_location=on_location, subscribe_location=True)
+        sub.assert_called_once_with(device_id="A", on_status_update=None, on_location=on_location)
+        self.assertTrue(client.mqtt.subscribe_location)
+
+        client2 = MowerClient(session=mock.Mock(), token="t", mqtt_broker="broker")
+        with (
+            mock.patch.object(client2, "async_refresh_mqtt_info", new=mock.AsyncMock()),
+            mock.patch.object(client2.mqtt, "async_connect", new=mock.AsyncMock()),
+            mock.patch.object(client2.mqtt, "async_subscribe_device", new=mock.AsyncMock()) as asub,
+        ):
+            asyncio.run(
+                client2.async_subscribe_device_updates(
+                    "B", on_location=on_location, subscribe_location=True
+                )
+            )
+        asub.assert_awaited_once_with(device_id="B", on_status_update=None, on_location=on_location)
+        self.assertTrue(client2.mqtt.subscribe_location)
+
+    def test_async_session_is_rebuilt_when_credentials_change(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, username="u1", password="p1", loop=loop)
+
+        async def scenario():
+            a = asyncio.ensure_future(mqtt.async_subscribe_device("A"))
+            await asyncio.sleep(0)
+            c1 = mqtt._async_client
+            c1.on_connect(c1, None, None, 0)
+            mqtt.configure_wss("broker", "/mqtt", "u2", "p2", {"Authorization": "Bearer T2"})
+            b = asyncio.ensure_future(mqtt.async_subscribe_device("B"))
+            await asyncio.sleep(0.05)
+            c2 = mqtt._async_client
+            self.assertIsNot(c1, c2)
+            self.assertEqual(("u2", "p2"), c2.username_password)
+            self.assertEqual(1, c1.disconnect_calls)
+            done, _ = await asyncio.wait({a}, timeout=0.5)
+            self.assertEqual({a}, done)  # A vart vekt: økta hans er over
+            c2.on_connect(c2, None, None, 0)
+            self.assertIn("/downlink/vehicle/B/realtimeDate/state", c2.subscriptions)
+            mqtt._async_stop_event.set()
+            await b
+
+        loop.run_until_complete(scenario())

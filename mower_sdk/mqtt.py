@@ -111,11 +111,18 @@ def _close_awaitable(awaitable: Awaitable[Any]) -> None:
         close()
 
 
+def _log_teardown_result(future: "asyncio.Future[Any]") -> None:
+    if not future.cancelled() and future.exception() is not None:
+        _LOGGER.debug("Background MQTT client teardown raised: %s", future.exception())
+
+
 def _stop_paho_client(client: Any) -> None:
     """Stopp ein paho-klient: disconnect() først så nettverkstråden avsluttar sjølv og
     lukkar socketen, deretter loop_stop() som ventar på tråden."""
-    client.disconnect()
-    client.loop_stop()
+    try:
+        client.disconnect()
+    finally:
+        client.loop_stop()
 
 
 def _validate_topics(topics: Optional[list[str]]) -> list[str]:
@@ -209,6 +216,8 @@ class MowerMQTT:
         self._async_session_was_connected = False
         self._async_location_pass_done = False
         self._async_waiters = 0
+        self._async_session_lock: Optional[asyncio.Lock] = None
+        self._async_signature: Optional[tuple[Any, ...]] = None
         self._callbacks: dict[str, dict[str, Optional[Callable[..., Any]]]] = {}
         self._connected = False
 
@@ -490,20 +499,21 @@ class MowerMQTT:
         loop = self._loop
 
         my_callbacks = self._callbacks[device_id]
-        live_session = (
-            self._async_client is not None
-            and self._async_stop_event is not None
-            and not self._async_stop_event.is_set()
-            # Ei økt som har vore tilkopla men no er broten, er på veg ut sjølv om
-            # stopp-hendinga enno ikkje er køyrd på løkka: start heller ei ny.
-            and (self._async_connected or not self._async_session_was_connected)
-        )
-        if not live_session:
-            if self._async_client is not None:
-                await self._end_async_session_async(loop)
-            self._start_async_session(device_id, loop)
+        if not self._async_session_is_live():
+            async with self._session_lock():
+                # Ein annan deltakar kan ha starta ei ny økt medan vi venta på låsen.
+                if self._async_client is not None and not self._async_session_is_live():
+                    stale_event = self._async_stop_event
+                    await self._end_async_session_async(loop)
+                    if stale_event is not None:
+                        stale_event.set()  # vekk deltakarar i den gamle økta
+                if self._async_client is None:
+                    self._start_async_session(device_id, loop)
+                elif self._async_connected:
+                    self._subscribe_topics(self._async_client, [device_id])
         elif self._async_connected:
-            assert self._async_client is not None
+            if self._async_client is None:
+                raise MowerMQTTError(ERROR_MESSAGES["MQTT_CONNECTION_FAILED"])
             try:
                 if self.subscribe_location and not self._async_location_pass_done:
                     # Nyleg påslått subscribe_location: éin full pass over alle einingar.
@@ -517,7 +527,8 @@ class MowerMQTT:
         # Elles tek on_connect seg av abonnementet når tilkoplinga er oppe.
 
         stop_event = self._async_stop_event
-        assert stop_event is not None
+        if stop_event is None:
+            raise MowerMQTTError(ERROR_MESSAGES["MQTT_CONNECTION_FAILED"])
         self._async_waiters += 1
         try:
             await stop_event.wait()
@@ -527,7 +538,26 @@ class MowerMQTT:
             self._forget_callbacks(device_id, my_callbacks)
             self._async_waiters -= 1
             if self._async_waiters == 0 and self._async_stop_event is stop_event:
-                await self._end_async_session_async(loop)
+                async with self._session_lock():
+                    if self._async_stop_event is stop_event:
+                        await self._end_async_session_async(loop)
+
+    def _async_session_is_live(self) -> bool:
+        """Sei om den asynkrone økta kan delast: har klient, er ikkje stoppa, er ikkje
+        broten etter å ha vore oppe, og er bygd med gjeldande tilkoplingsoppsett."""
+        return (
+            self._async_client is not None
+            and self._async_stop_event is not None
+            and not self._async_stop_event.is_set()
+            and (self._async_connected or not self._async_session_was_connected)
+            and self._async_signature == self._connection_signature()
+        )
+
+    def _session_lock(self) -> asyncio.Lock:
+        """Lås som gjer start/stopp av den asynkrone økta gjensidig utelukkande."""
+        if self._async_session_lock is None:
+            self._async_session_lock = asyncio.Lock()
+        return self._async_session_lock
 
     def _forget_callbacks(self, device_id: str, owned: dict[str, Any]) -> None:
         """Fjern tilbakekalla for eininga, men berre om dei framleis er våre eigne."""
@@ -543,8 +573,14 @@ class MowerMQTT:
         self._async_session_was_connected = False
         self._async_location_pass_done = False
         if client is not None:
+            # Skjerma: eit avbrot medan stoppinga ventar i utføraren skal ikkje etterlate
+            # ein levande paho-tråd som ingen lenger kan nå.
+            stopping = loop.run_in_executor(None, _stop_paho_client, client)
             try:
-                await loop.run_in_executor(None, _stop_paho_client, client)
+                await asyncio.shield(stopping)
+            except asyncio.CancelledError:
+                stopping.add_done_callback(_log_teardown_result)
+                raise
             except Exception:
                 _LOGGER.debug("Cleanup of async MQTT client raised", exc_info=True)
 
@@ -555,6 +591,8 @@ class MowerMQTT:
         self._async_connected = False
         self._async_session_was_connected = False
         self._async_location_pass_done = False
+        self._async_signature = self._connection_signature()
+        started = False
         try:
             client = self._build_client()
             self._async_client = client
@@ -606,26 +644,22 @@ class MowerMQTT:
             )
             client.connect(self.broker, self.port, self.keepalive_seconds)
             client.loop_start()
+            started = True
         except Exception as e:
             # Ikkje lat ein halvbygd klient blokkere seinare kall; vekk eventuelle ventarar.
             self._callbacks.pop(device_id, None)
-            self._end_async_session()
+            failed_client = self._async_client
+            self._async_client = None
+            self._async_stop_event = None
+            self._async_connected = False
+            self._async_session_was_connected = False
+            if failed_client is not None and started:
+                # Nettverkstråden er i gang: stopp henne i utføraren, ikkje på løkka.
+                loop.run_in_executor(None, _stop_paho_client, failed_client).add_done_callback(
+                    _log_teardown_result
+                )
             stop_event.set()
             raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}") from e
-
-    def _end_async_session(self) -> None:
-        """Stopp den asynkrone klienten og nullstill øktstatusen."""
-        client = self._async_client
-        self._async_client = None
-        self._async_stop_event = None
-        self._async_connected = False
-        self._async_session_was_connected = False
-        self._async_location_pass_done = False
-        if client is not None:
-            try:
-                _stop_paho_client(client)
-            except Exception:
-                _LOGGER.debug("Cleanup of async MQTT client raised", exc_info=True)
 
     def subscribe_device(
         self,
@@ -901,9 +935,13 @@ class NavimowMQTT:
             self._network_loop_started = True
 
     def disconnect(self) -> None:
-        _stop_paho_client(self.client)
+        # Rekkjefølgja er medvite den same som før (loop_stop før disconnect): då når paho
+        # ikkje on_disconnect, og Home Assistant-integrasjonen får ikkje eit uventa
+        # on_disconnected-tilbakekall under avlasting.
+        self.client.loop_stop()
         self._network_loop_started = False
         self._connection_started = False
+        self.client.disconnect()
         _LOGGER.info(
             "NavimowMQTT disconnect requested: broker=%s port=%s",
             self.broker,
