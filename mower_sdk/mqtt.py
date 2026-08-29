@@ -439,6 +439,10 @@ class MowerMQTT:
             self._sync_client.connect(self.broker, self.port, self.keepalive_seconds)
             self._sync_client.loop_start()
         except Exception as e:
+            # Ikkje lat ein halvbygd klient lure idempotens-vernet ved neste forsøk.
+            self._sync_client = None
+            self._sync_signature = None
+            self._connected = False
             raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_CONNECTION_FAILED']}: {str(e)}") from e
 
     async def async_subscribe_device(
@@ -468,8 +472,12 @@ class MowerMQTT:
             missing_message="MowerMQTT.async_subscribe_device() requires a running event loop or an explicit loop= argument",
         )
         loop = self._loop
-        if self._async_client is not None and self._async_stop_event is not None:
-            # Alt ein aktiv asynkron klient: del han. Abonner den nye eininga no om vi er
+        if (
+            self._async_client is not None
+            and self._async_stop_event is not None
+            and not self._async_stop_event.is_set()
+        ):
+            # Alt ein levande asynkron økt: del han. Abonner den nye eininga no om vi er
             # tilkopla (elles tek on_connect det), og vent på same stopp-hending.
             if self._connected:
                 try:
@@ -480,6 +488,11 @@ class MowerMQTT:
                     ) from e
             await self._async_stop_event.wait()
             return
+        if self._async_client is not None:
+            # Førre økt er over (stopp-hendinga er sett): rydd før vi byggjer ny.
+            self._async_client.loop_stop()
+            self._async_client.disconnect()
+            self._async_client = None
         self._async_stop_event = asyncio.Event()
         try:
             self._async_client = self._build_client()
@@ -520,6 +533,7 @@ class MowerMQTT:
                     self.port,
                     device_id,
                 )
+                self._connected = False
                 if self._async_stop_event:
                     _call_soon_threadsafe(loop, self._async_stop_event.set)
 
@@ -537,7 +551,20 @@ class MowerMQTT:
             self._async_client.loop_start()
 
             await self._async_stop_event.wait()
-        except Exception as e:
+        except BaseException as e:
+            # Feil eller avbrot: ikkje lat ein halvbygd klient blokkere seinare kall.
+            failed_client = self._async_client
+            self._async_client = None
+            self._async_stop_event = None
+            self._connected = False
+            if failed_client is not None:
+                try:
+                    failed_client.loop_stop()
+                    failed_client.disconnect()
+                except Exception:
+                    _LOGGER.debug("Cleanup of failed async MQTT client raised", exc_info=True)
+            if isinstance(e, asyncio.CancelledError):
+                raise
             raise MowerMQTTError(f"{ERROR_MESSAGES['MQTT_SUBSCRIBE_FAILED']}: {str(e)}") from e
 
     def subscribe_device(
@@ -607,6 +634,7 @@ class MowerMQTT:
             self._async_stop_event.set()
         self._connected = False
         self._async_client = None
+        self._async_stop_event = None
 
     def disconnect(self) -> None:
         """Bryt MQTT-tilkopling synkront."""
@@ -616,6 +644,7 @@ class MowerMQTT:
             # Ein stoppa paho-klient er død; fjern han så neste connect() byggjer ein ny.
             self._sync_client = None
         self._connected = False
+        self._location_pass_done = False
 
 
 class NavimowMQTT:

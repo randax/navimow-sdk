@@ -981,3 +981,57 @@ class ReviewRegressionTests(unittest.TestCase):
         t.join()
         self.assertEqual([], threads)  # ingen brukarkode køyrde på paho-tråden
         self.assertEqual(3, len(loop.calls))  # ready + raw + message, alle i kø
+
+    def test_failed_connect_can_be_retried(self):
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883)
+        with mock.patch.object(FakePahoClient, "connect", side_effect=OSError("down")):
+            with self.assertRaises(self.mqtt_module.MowerMQTTError):
+                mqtt.connect()
+        self.assertIsNone(mqtt._sync_client)
+        mqtt.connect()  # ny klient, ekte connect
+        self.assertEqual(1, len(mqtt._sync_client.connect_calls))
+
+    def test_failed_async_subscribe_can_be_retried(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+
+        async def scenario():
+            await mqtt.async_connect()
+            with mock.patch.object(FakePahoClient, "connect", side_effect=OSError("down")):
+                with self.assertRaises(self.mqtt_module.MowerMQTTError):
+                    await mqtt.async_subscribe_device("A", on_status_update=mock.Mock())
+            self.assertIsNone(mqtt._async_client)
+            task = asyncio.ensure_future(mqtt.async_subscribe_device("A"))
+            await asyncio.sleep(0)
+            self.assertIsNotNone(mqtt._async_client)  # bygd på nytt, ikkje hengande
+            self.assertEqual(1, len(mqtt._async_client.connect_calls))
+            mqtt._async_stop_event.set()
+            await task
+
+        loop.run_until_complete(scenario())
+
+    def test_async_disconnect_ends_session_and_next_subscribe_rebuilds(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        mqtt = self.mqtt_module.MowerMQTT("broker", 1883, loop=loop)
+
+        async def scenario():
+            await mqtt.async_connect()
+            first = asyncio.ensure_future(mqtt.async_subscribe_device("A"))
+            await asyncio.sleep(0)
+            client = mqtt._async_client
+            client.on_connect(client, None, None, 0)
+            self.assertTrue(mqtt._connected)
+            client.on_disconnect(client, None, None, 0)
+            await asyncio.sleep(0)
+            await first  # kontrakt: kallet returnerer når tilkoplinga blir broten
+            self.assertFalse(mqtt._connected)
+            second = asyncio.ensure_future(mqtt.async_subscribe_device("B"))
+            await asyncio.sleep(0)
+            self.assertFalse(second.done())  # ikkje umiddelbar retur frå gamal hending
+            self.assertIsNot(client, mqtt._async_client)  # ny klient for ny økt
+            mqtt._async_stop_event.set()
+            await second
+
+        loop.run_until_complete(scenario())
