@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `DeviceLocationMessage` får `current_zone`, `zone_progress`, `action`,
+  `sub_action`, `week_area`, `partition_ids` og `task_delay`, og ein `status`-
+  eigenskap som omset `vehicleState` (2 → `CHARGING`) via `VEHICLE_STATE_TO_STATUS`.
+- Dokumenterer `vehicleState`- og `mapWorkPosition`-kodinga i `docs/models.md`.
+
 ## 0.3.0
 
 - Legg til frivillig MQTT-posisjon (`location`) med `DeviceLocationMessage`,

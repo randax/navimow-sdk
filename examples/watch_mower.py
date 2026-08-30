@@ -60,7 +60,8 @@ def on_attributes(msg: DeviceAttributesMessage) -> None:
 def on_location(msg: DeviceLocationMessage) -> None:
     print(
         f"[posisjon] {msg.device_id}: x={msg.x} y={msg.y} theta={msg.theta} "
-        f"type={msg.type} framdrift={msg.mowing_percentage}%"
+        f"type={msg.type} framdrift={msg.mowing_percentage}% "
+        f"sone={msg.current_zone} soneframdrift={msg.zone_progress}% status={msg.status}"
     )
 
 
