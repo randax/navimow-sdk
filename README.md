@@ -114,7 +114,7 @@ A prebuilt wheel is attached to each
 `.whl` for the latest release and install it directly:
 
 ```bash
-python -m pip install https://github.com/randax/navimow-sdk/releases/download/v0.3.0/randax_navimow_sdk-0.3.0-py3-none-any.whl
+python -m pip install https://github.com/randax/navimow-sdk/releases/download/v0.4.0/randax_navimow_sdk-0.4.0-py3-none-any.whl
 ```
 
 To build the wheel yourself, run from a source checkout:

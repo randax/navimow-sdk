@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - `DeviceLocationMessage` får `current_zone`, `zone_progress`, `action`,
   `sub_action`, `week_area`, `partition_ids` og `task_delay`, og ein `status`-

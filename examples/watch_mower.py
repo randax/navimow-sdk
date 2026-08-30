@@ -58,11 +58,19 @@ def on_attributes(msg: DeviceAttributesMessage) -> None:
 
 
 def on_location(msg: DeviceLocationMessage) -> None:
-    print(
-        f"[posisjon] {msg.device_id}: x={msg.x} y={msg.y} theta={msg.theta} "
-        f"type={msg.type} framdrift={msg.mowing_percentage}% "
-        f"sone={msg.current_zone} soneframdrift={msg.zone_progress}% status={msg.status}"
-    )
+    if msg.type == "1":
+        status = msg.status.value if msg.status else None
+        print(f"[posisjon] {msg.device_id}: x={msg.x} y={msg.y} theta={msg.theta} status={status}")
+    elif msg.type == "2":
+        print(
+            f"[framdrift] {msg.device_id}: sone={msg.current_zone} "
+            f"soneframdrift={msg.zone_progress}% oppdrag={msg.mowing_percentage}% "
+            f"areal={msg.subtotal_area}m² fase={msg.action}/{msg.sub_action}"
+        )
+    elif msg.partition_ids is not None:
+        print(f"[soner] {msg.device_id}: {msg.partition_ids}")
+    elif msg.task_delay is not None:
+        print(f"[oppdrag] {msg.device_id}: utsett={msg.task_delay}")
 
 
 def on_raw(topic: str, payload: bytes) -> None:

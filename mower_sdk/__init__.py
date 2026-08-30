@@ -36,7 +36,7 @@ from mower_sdk.navimow import Navimow
 from mower_sdk.sdk import NavimowSDK
 from mower_sdk.state_manager import StateManager
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     # Hovudklient

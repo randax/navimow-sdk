@@ -131,7 +131,7 @@ class CompatibilityTests(unittest.TestCase):
         _FakePahoClient.instances.clear()
 
     def test_public_import_and_version(self):
-        self.assertEqual(mower_sdk.__version__, "0.3.0")
+        self.assertEqual(mower_sdk.__version__, "0.4.0")
         self.assertIs(mower_sdk.NavimowSDK, sdk_module.NavimowSDK)
 
     def test_public_type_hints_resolve_on_python_39(self):

@@ -47,7 +47,7 @@ def guarded_import(name, *args, **kwargs):
     return original_import(name, *args, **kwargs)
 builtins.__import__ = guarded_import
 import mower_sdk
-assert mower_sdk.__version__ == '0.3.0'
+assert mower_sdk.__version__ == '0.4.0'
 """
 
         result = subprocess.run(

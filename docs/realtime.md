@@ -87,10 +87,22 @@ from mower_sdk import DeviceLocationMessage
 sdk = NavimowSDK(..., records=devices, subscribe_location=True)
 
 def on_location(point: DeviceLocationMessage) -> None:
-    print(point.device_id, point.x, point.y, point.theta, point.mowing_percentage)
+    if point.type == "1":    # posisjon
+        print(point.x, point.y, point.theta, point.status)
+    elif point.type == "2":  # framdrift
+        print(f"sone {point.current_zone}: {point.zone_progress}% "
+              f"(oppdrag {point.mowing_percentage}%, {point.subtotal_area} m²)")
+    elif point.partition_ids is not None:
+        print("soner i oppdraget:", point.partition_ids)
 
 sdk.on_location(on_location)
 ```
+
+Kanalen ber fire meldingstypar: `1` posisjon (med `vehicleState`, som `status`
+omset til `MowerStatus` – inkludert `CHARGING`, som tilstandskanalen aldri
+sender), `2` framdrift per sone og for heile oppdraget, `3` soneliste /
+hjarteslag og `4` `task_delay`. Sjå [models.md](models.md) for alle felta og
+kodinga av `vehicleState`.
 
 `x` og `y` er meter relativt til ladestasjonen, og `theta` er radianar.
 `get_cached_location(device_id)` gjev sist godtekne `DeviceLocationMessage`.
