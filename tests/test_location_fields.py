@@ -23,8 +23,12 @@ PARTITIONS = {"partitionIds": [10, 11], "time": 1788085139768, "type": 3}
 HEARTBEAT = {"time": 1788084093268, "type": 3}
 TASK_DELAY = {"taskDelay": False, "type": 4}
 POSE_CHARGING = {
-    "postureTheta": "1.039", "postureX": "-0.262", "postureY": "-0.411",
-    "time": 1788087137087, "type": 1, "vehicleState": 2,
+    "postureTheta": "1.039",
+    "postureX": "-0.262",
+    "postureY": "-0.411",
+    "time": 1788087137087,
+    "type": 1,
+    "vehicleState": 2,
 }
 
 
