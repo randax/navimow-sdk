@@ -21,6 +21,7 @@ from mower_sdk.models import (
     DeviceAttributesMessage,
     DeviceCommandMessage,
     DeviceEventMessage,
+    DeviceLocationMessage,
     DeviceStateMessage,
     DeviceStatus,
     MowerCommand,
@@ -35,7 +36,7 @@ from mower_sdk.navimow import Navimow
 from mower_sdk.sdk import NavimowSDK
 from mower_sdk.state_manager import StateManager
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     # Hovudklient
@@ -55,6 +56,7 @@ __all__ = [
     "Device",
     "DeviceStateMessage",
     "DeviceEventMessage",
+    "DeviceLocationMessage",
     "DeviceAttributesMessage",
     "DeviceCommandMessage",
     "DeviceStatus",

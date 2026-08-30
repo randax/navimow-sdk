@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0
+
+- Legg til frivillig MQTT-posisjon (`location`) med `DeviceLocationMessage`,
+  mellomlager og filtrering av plasshaldarar og forelda punkt.
+- Legg til `extra_topics` og løkketrygge `on_raw`-tilbakekall for rå meldingar.
+- Gjer `MowerMQTT` og `MowerClient.subscribe_device_updates()` klare for dei
+  verkelege `realtimeDate`-emna, inkludert posisjon og statuskonvertering.
+- Utvid `watch_state.py` med `--location`, `--raw` og `--discover`.
+
 ## 0.2.0
 
 - Publish the fork as `randax-navimow-sdk` while retaining the `mower_sdk`

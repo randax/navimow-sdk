@@ -1,7 +1,7 @@
 # REST: oppdaging, status, kommandoar
 
 `MowerClient` er inngangen til dagleg bruk. Han eig ein `MowerAPI` (REST) og
-ein `MowerMQTT` (plasshaldar), og held det gjeldande teiknet.
+ein `MowerMQTT`, og held det gjeldande teiknet.
 
 ```python
 from mower_sdk import MowerClient, UrllibSession
@@ -19,11 +19,40 @@ Parametrar til konstruktøren:
 | `api_base_url` | `""` | Grunn-URL; avsluttande skråstrek blir fjerna |
 | `mqtt_broker`, `mqtt_port`, `mqtt_username`, `mqtt_password` | — | Valfrie; blir overskrivne av `async_refresh_mqtt_info()` |
 | `loop` | `None` | Eksplisitt asyncio-løkke for MQTT-sida |
+| `extra_topics` | `None` | Ekstra MQTT-emne som blir abonnerte ordrett |
 
 Kvar metode nedanfor finst i asynkron form (`async_*`) og blokkerande form. Dei
 blokkerande formene kallar `asyncio.run()` internt, så dei må **ikkje** kallast
 frå ei køyrande løkke. Føretrekk dei asynkrone formene overalt, unnateke i
 eingongsskript.
+
+## MQTT-oppdateringar
+
+`async_subscribe_device_updates()` og `subscribe_device_updates()` tek no
+`callback=None`, `on_location=None` og `subscribe_location=False`. Når
+`subscribe_location=True`, får `on_location` kvart godteke
+`DeviceLocationMessage`; meldingar med stilleståande nullposisjon eller eldre
+tidsstempel for same lesingstype blir filtrerte bort.
+
+`async_subscribe_device_updates()` køyrer til tilkoplinga blir broten (fleire
+einingar kan dele éi tilkopling ved å køyre kalla samstundes, t.d. med
+`asyncio.gather`), så start det som ei oppgåve. Blir MQTT-legitimasjonen
+frisk opp i mellomtida (det skjer ved kvart nytt kall), byter SDK-en økt i det
+stille og alle einingane held fram på den nye; kallet returnerer først når
+tilkoplinga verkeleg blir broten. Eitt aktivt kall per eining.
+
+```python
+watcher = asyncio.create_task(
+    client.async_subscribe_device_updates(
+        device_id,
+        callback=handle_status,
+        on_location=handle_location,
+        subscribe_location=True,
+    )
+)
+...
+location = client.get_cached_location(device_id)  # DeviceLocationMessage | None
+```
 
 ## Oppdag einingar
 

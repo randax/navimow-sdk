@@ -13,7 +13,13 @@ from mower_sdk.models import (
     DeviceAttributesMessage,
     DeviceCommandMessage,
     DeviceEventMessage,
+    DeviceLocationMessage,
     DeviceStateMessage,
+    LocationFilter,
+    extract_battery_value_or_none,
+    is_recognised_state,
+    parse_location_payload,
+    state_source,
 )
 from mower_sdk.mqtt import NavimowMQTT
 
@@ -24,10 +30,9 @@ class NavimowSDK:
     """SDK-fasade for MQTT-styrt integrasjon.
 
     Merknader:
-        - on_state/on_event/on_attributes-tilbakekall er synkrone.
-        - Tilbakekalla blir køyrde frå MQTT-tråden eller event loop-konteksten.
-          Home Assistant må byte til hass-løkka via call_soon_threadsafe eller
-          run_coroutine_threadsafe.
+        - on_state/on_event/on_attributes/on_location/on_raw-tilbakekall er synkrone.
+        - Tilbakekalla blir alltid køyrde på den bundne asyncio-løkka (aldri på
+          MQTT-tråden), så Home Assistant kan røre entitetar direkte i dei.
     """
 
     def __init__(
@@ -43,6 +48,8 @@ class NavimowSDK:
         keepalive_seconds: int = 2400,
         reconnect_min_delay: int = 1,
         reconnect_max_delay: int = 60,
+        subscribe_location: bool = False,
+        extra_topics: Optional[list[str]] = None,
     ) -> None:
         self._loop = loop
         self._mqtt = NavimowMQTT(
@@ -57,6 +64,8 @@ class NavimowSDK:
             keepalive_seconds=keepalive_seconds,
             reconnect_min_delay=reconnect_min_delay,
             reconnect_max_delay=reconnect_max_delay,
+            subscribe_location=subscribe_location,
+            extra_topics=extra_topics,
         )
         self._loop = self._mqtt.loop
         self._mqtt.on_message = self._on_mqtt_message
@@ -64,9 +73,13 @@ class NavimowSDK:
         self._state_callbacks: list[Callable[[DeviceStateMessage], None]] = []
         self._event_callbacks: list[Callable[[DeviceEventMessage], None]] = []
         self._attributes_callbacks: list[Callable[[DeviceAttributesMessage], None]] = []
+        self._location_callbacks: list[Callable[[DeviceLocationMessage], None]] = []
+        self._raw_callbacks: list[Callable[[str, bytes], None]] = []
 
         self._state_cache: dict[str, DeviceStateMessage] = {}
         self._attributes_cache: dict[str, DeviceAttributesMessage] = {}
+        self._location_cache: dict[str, DeviceLocationMessage] = {}
+        self._location_filter = LocationFilter()
 
     def connect(self) -> None:
         """Kople til MQTT-meglaren og start mottak."""
@@ -109,21 +122,48 @@ class NavimowSDK:
     def on_attributes(self, callback: Callable[[DeviceAttributesMessage], None]) -> None:
         self._attributes_callbacks.append(callback)
 
+    def on_location(self, callback: Callable[[DeviceLocationMessage], None]) -> None:
+        """Registrer tilbakekall for kvar godteken posisjonslesing."""
+        self._location_callbacks.append(callback)
+
+    def on_raw(self, callback: Callable[[str, bytes], None]) -> None:
+        """Registrer tilbakekall for alle råe MQTT-meldingar."""
+        self._raw_callbacks.append(callback)
+        # Kopla til først når nokon lyttar, så vanleg drift ikkje lagar ei ekstra oppgåve per melding.
+        self._mqtt.on_raw = self._on_mqtt_raw
+
     def get_cached_state(self, device_id: str) -> Optional[DeviceStateMessage]:
         return self._state_cache.get(device_id)
 
     def get_cached_attributes(self, device_id: str) -> Optional[DeviceAttributesMessage]:
         return self._attributes_cache.get(device_id)
 
+    def get_cached_location(self, device_id: str) -> Optional[DeviceLocationMessage]:
+        return self._location_cache.get(device_id)
+
+    @staticmethod
+    def _dispatch(callbacks: list[Callable[[Any], None]], message: Any, label: str) -> None:
+        """Kall kvart tilbakekall; eitt som feilar skal ikkje stoppe dei andre."""
+        for callback in list(callbacks):
+            try:
+                callback(message)
+            except Exception:
+                _LOGGER.exception(
+                    "%s callback failed for %s", label, getattr(message, "device_id", "?")
+                )
+
+    async def _on_mqtt_raw(self, topic: str, payload: bytes) -> None:
+        for raw_callback in list(self._raw_callbacks):
+            try:
+                raw_callback(topic, payload)
+            except Exception:  # eitt feilande tilbakekall skal ikkje stoppe resten
+                _LOGGER.exception("Raw callback failed for topic %s", topic)
+
     async def _on_mqtt_message(self, topic: str, payload: bytes, device_id: str) -> None:
         try:
             payload_dict = json.loads(payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return
-        if not isinstance(payload_dict, dict):
-            return
-
-        payload_dict.setdefault("device_id", device_id)
         parts = topic.split("/")
         if parts and parts[0] == "":
             parts = parts[1:]
@@ -135,22 +175,43 @@ class NavimowSDK:
             return
         channel = parts[4]
 
+        if channel == "location":
+            for location_message in self._location_filter.filter(
+                parse_location_payload(payload_dict, device_id)
+            ):
+                if location_message.x is not None and location_message.y is not None:
+                    # Framdriftspunkt utan koordinatar skal ikkje overskrive siste posisjon.
+                    self._location_cache[device_id] = location_message
+                self._dispatch(self._location_callbacks, location_message, "Location")
+            return
+
+        if not isinstance(payload_dict, dict):
+            return
+
+        payload_dict.setdefault("device_id", device_id)
+
         if channel == "state":
             state_message = DeviceStateMessage.from_dict(payload_dict)
-            self._state_cache[state_message.device_id] = state_message
-            for state_callback in list(self._state_callbacks):
-                state_callback(state_message)
+            cached = self._state_cache.get(device_id)
+            if cached is not None:
+                # Tilstandskanalen sender delvise meldingar; hald på siste kjende verdiar.
+                if extract_battery_value_or_none(payload_dict) is None:
+                    state_message.battery = cached.battery
+                if state_message.state == "unknown" and not is_recognised_state(
+                    state_source(payload_dict)
+                ):
+                    state_message.state = cached.state
+            self._state_cache[device_id] = state_message
+            self._dispatch(self._state_callbacks, state_message, "State")
             return
         if channel == "event":
             event_message = DeviceEventMessage.from_dict(payload_dict)
-            for event_callback in list(self._event_callbacks):
-                event_callback(event_message)
+            self._dispatch(self._event_callbacks, event_message, "Event")
             return
         if channel == "attributes":
             attributes_message = DeviceAttributesMessage.from_dict(payload_dict)
-            self._attributes_cache[attributes_message.device_id] = attributes_message
-            for attributes_callback in list(self._attributes_callbacks):
-                attributes_callback(attributes_message)
+            self._attributes_cache[device_id] = attributes_message
+            self._dispatch(self._attributes_callbacks, attributes_message, "Attributes")
 
     def _publish_command(self, message: DeviceCommandMessage) -> None:
         if not self._mqtt.is_connected:

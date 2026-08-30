@@ -81,6 +81,23 @@ Verdiar som ikkje står i lista går uendra gjennom (t.d. `charging`).
 
 `device_id`, `attributes: dict`.
 
+### `DeviceLocationMessage` — emne `…/realtimeDate/location`
+
+| Felt | Type | Merknad |
+|---|---|---|
+| `device_id` | `str` | Lagt inn frå MQTT-emnet |
+| `x`, `y` | `float \| None` | Meter relativt til ladestasjonen |
+| `theta` | `float \| None` | Retning i radianar |
+| `timestamp` | `int \| None` | `time` på leidninga (`timestamp` blir òg godteken) |
+| `type` | `str \| None` | Råverdien gjort om med `str()` |
+| `vehicle_state` | `int \| None` | Ugjennomsiktig, separat vokabular frå tilstandskanalen |
+| `mowing_percentage`, `subtotal_area` | `float \| None` | Framdrift og delareal når dei finst |
+| `mow_start_type` | `Any \| None` | Rå starttype |
+| `raw` | `dict` | Uendra punkt frå leidninga |
+
+Felta er observerte gjennom `ioBroker.navimow`, ikkje dokumenterte i ei
+offisiell protokollspesifikasjon.
+
 ### `DeviceCommandMessage` — utgåande
 
 `id`, `device_id`, `command`, `params`. Blir bygd for deg av

@@ -3,9 +3,13 @@
 Definerer alle datamodellar som SDK-en bruker, inkludert opprekningar og dataklassar.
 """
 
-from dataclasses import dataclass
+import logging
+import math
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
+
+_LOGGER = logging.getLogger(__name__)
 
 _RAW_STATE_TO_CANONICAL: dict[str, str] = {
     "isDocked": "docked",
@@ -26,6 +30,27 @@ _RAW_STATE_TO_CANONICAL: dict[str, str] = {
 }
 
 
+def state_source(data: dict[str, Any], prefer_status: bool = False) -> Any:
+    """Den eine staden som avgjer kva nøkkel tilstanden blir lesen frå.
+
+    `DeviceStatus` (REST) har alltid føretrekt `status` framfor `state`; MQTT-
+    tilstandsmeldingar føretrekkjer `state`. Same prioritet som før på begge stader.
+    """
+    if prefer_status:
+        return data.get("status") or data.get("state") or data.get("vehicleState")
+    return data.get("state") or data.get("status") or data.get("vehicleState")
+
+
+def is_recognised_state(raw_state: Any) -> bool:
+    """Sei om råverdien er ein tilstand vi kjenner (kanonisk eller via oppslagstabellen)."""
+    if isinstance(raw_state, MowerStatus):
+        return True
+    if not isinstance(raw_state, str):
+        return False
+    canonical = _RAW_STATE_TO_CANONICAL.get(raw_state, raw_state)
+    return any(canonical == member.value for member in MowerStatus)
+
+
 def _normalize_state_value(raw_state: Any) -> str:
     """Normaliser skya eller rå klipparstatus til intern kanonisk status."""
     if isinstance(raw_state, MowerStatus):
@@ -36,7 +61,13 @@ def _normalize_state_value(raw_state: Any) -> str:
 
 
 def _extract_battery_value(data: dict[str, Any]) -> int:
-    """Hent batteriprosent frå fleire ulike lastformat."""
+    """Hent batteriprosent frå fleire ulike lastformat (0 når det ikkje finst)."""
+    value = extract_battery_value_or_none(data)
+    return 0 if value is None else value
+
+
+def extract_battery_value_or_none(data: dict[str, Any]) -> Optional[int]:
+    """Hent batteriprosent, eller None når lasta ikkje ber ein brukbar verdi."""
 
     def _to_int_or_none(value: Any) -> Optional[int]:
         try:
@@ -67,7 +98,7 @@ def _extract_battery_value(data: dict[str, Any]) -> int:
             if raw_value is not None:
                 return raw_value
 
-    return 0
+    return None
 
 
 class MowerStatus(Enum):
@@ -309,7 +340,7 @@ class DeviceStatus:
         Retur:
             Ein DeviceStatus-instans
         """
-        status_source = data.get("status") or data.get("state") or data.get("vehicleState")
+        status_source = state_source(data, prefer_status=True)
         normalized_state = _normalize_state_value(status_source)
         try:
             status = MowerStatus(normalized_state)
@@ -324,15 +355,13 @@ class DeviceStatus:
 
         battery = _extract_battery_value(data)
 
-        extra = data.get("extra") or {}
+        extra: dict[str, Any] = dict(data.get("extra") or {})
         if "vehicleState" in data:
             extra["vehicleState"] = data.get("vehicleState")
         if "descriptiveCapacityRemaining" in data:
             extra["descriptiveCapacityRemaining"] = data.get("descriptiveCapacityRemaining")
         if "capacityRemaining" in data:
             extra["capacityRemaining"] = data.get("capacityRemaining")
-        if not extra:
-            extra = None
 
         return cls(
             device_id=data.get("device_id") or data.get("id", ""),
@@ -345,8 +374,42 @@ class DeviceStatus:
             total_mowing_time=data.get("total_mowing_time"),
             signal_strength=data.get("signal_strength"),
             timestamp=data.get("timestamp"),
-            extra=extra,
+            extra=extra or None,
         )
+
+    @classmethod
+    def from_state_message(
+        cls,
+        message: "DeviceStateMessage",
+        fallback_status: Optional[MowerStatus] = None,
+        fallback_battery: Optional[int] = None,
+    ) -> "DeviceStatus":
+        """Gjer ei MQTT-tilstandsmelding om til statusmodellen.
+
+        Byggjer på `from_dict` slik at posisjon, feilkode, klippetid og `extra` blir
+        handsama på same måte som for REST-svar. Tilstandskanalen sender delvise
+        meldingar, så manglande tilstand/batteri fell tilbake til dei bufra verdiane.
+        """
+        # Ei melding laga direkte (utan `raw`) blir bygd frå dei tolka felta.
+        raw = dict(message.raw) if message.raw is not None else message.to_dict()
+        raw.setdefault("device_id", message.device_id)
+        status = cls.from_dict(raw)
+
+        # Tilstanden følgjer MQTT-meldinga (state før status), ikkje REST-prioriteten
+        # som `from_dict` elles brukar for resten av felta.
+        try:
+            status.status = MowerStatus(message.state)
+        except ValueError:
+            status.status = MowerStatus.UNKNOWN
+        if status.status is MowerStatus.UNKNOWN and fallback_status is not None:
+            # Fall berre tilbake når tilstanden manglar eller er ukjend for oss (t.d.
+            # numerisk vehicleState). Ein eksplisitt kjend verdi som «offline» skal
+            # sleppe gjennom som UNKNOWN, elles maskerer vi at klipparen forsvann.
+            if not is_recognised_state(state_source(raw)):
+                status.status = fallback_status
+        if extract_battery_value_or_none(raw) is None and fallback_battery is not None:
+            status.battery = fallback_battery
+        return status
 
     def to_dict(self) -> dict[str, Any]:
         """Gjer om til ei ordbok.
@@ -389,14 +452,13 @@ class DeviceStateMessage:
     position: Optional[dict[str, float]] = None
     error: Optional[dict[str, Any]] = None
     metrics: Optional[dict[str, Any]] = None
+    raw: Optional[dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceStateMessage":
-        raw_state = payload.get("state") or payload.get("status") or payload.get("vehicleState")
+        raw_state = state_source(payload)
         normalized_state = _normalize_state_value(raw_state)
-        metrics = payload.get("metrics")
-        if not isinstance(metrics, dict):
-            metrics = dict(metrics or {})
+        metrics = dict(payload.get("metrics") or {})  # kopi: ikkje endre lasta til kallaren
         if raw_state is not None and normalized_state != raw_state:
             metrics["raw_state"] = raw_state
 
@@ -409,6 +471,7 @@ class DeviceStateMessage:
             position=payload.get("position"),
             error=payload.get("error"),
             metrics=metrics or None,
+            raw=dict(payload),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -422,6 +485,131 @@ class DeviceStateMessage:
             "error": self.error,
             "metrics": self.metrics,
         }
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    """Tolk heiltal, òg frå desimaltal og tal som strengar ("1755000000.5")."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        pass
+    try:
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+@dataclass
+class DeviceLocationMessage:
+    """Ei einskild posisjonslesing frå MQTT."""
+
+    device_id: str
+    x: Optional[float] = None
+    y: Optional[float] = None
+    theta: Optional[float] = None
+    timestamp: Optional[int] = None
+    type: Optional[str] = None
+    vehicle_state: Optional[int] = None
+    mowing_percentage: Optional[float] = None
+    subtotal_area: Optional[float] = None
+    mow_start_type: Optional[Any] = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "DeviceLocationMessage":
+        """Lag ei posisjonslesing frå den observerte leidningsforma."""
+        raw_type = payload.get("type")
+        return cls(
+            device_id=str(payload.get("device_id", "")),
+            x=_float_or_none(payload.get("postureX")),
+            y=_float_or_none(payload.get("postureY")),
+            theta=_float_or_none(payload.get("postureTheta")),
+            timestamp=_int_or_none(
+                payload["time"] if payload.get("time") is not None else payload.get("timestamp")
+            ),
+            type=str(raw_type) if raw_type is not None else None,
+            vehicle_state=_int_or_none(payload.get("vehicleState")),
+            mowing_percentage=_float_or_none(payload.get("mowingPercentage")),
+            subtotal_area=_float_or_none(payload.get("subtotalArea")),
+            mow_start_type=payload.get("mowStartType"),
+            raw=dict(payload),
+        )
+
+    @property
+    def is_placeholder(self) -> bool:
+        """Sei om lesinga er klipparen sin stilleståande plasshaldar."""
+        return self.x == 0.0 and self.y == 0.0 and self.theta == 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "device_id": self.device_id,
+            "x": self.x,
+            "y": self.y,
+            "theta": self.theta,
+            "timestamp": self.timestamp,
+            "type": self.type,
+            "vehicle_state": self.vehicle_state,
+            "mowing_percentage": self.mowing_percentage,
+            "subtotal_area": self.subtotal_area,
+            "mow_start_type": self.mow_start_type,
+            "raw": self.raw,
+        }
+
+
+def parse_location_payload(payload: Any, device_id: str) -> list[DeviceLocationMessage]:
+    """Tolk éi eller fleire posisjonslesingar og set einings-ID frå MQTT-emnet."""
+    values = payload if isinstance(payload, list) else [payload]
+    points: list[DeviceLocationMessage] = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        point = DeviceLocationMessage.from_dict(value)
+        point.device_id = device_id
+        points.append(point)
+    return points
+
+
+class LocationFilter:
+    """Filtrer bort plasshaldarar og seint komne posisjonslesingar."""
+
+    def __init__(self) -> None:
+        self._newest_timestamps: dict[tuple[str, str], int] = {}
+
+    def filter(self, points: list[DeviceLocationMessage]) -> list[DeviceLocationMessage]:
+        accepted: list[DeviceLocationMessage] = []
+        for point in points:
+            if point.is_placeholder:
+                _LOGGER.debug("Dropping placeholder location for device %s", point.device_id)
+                continue
+            if point.timestamp is None or point.type is None:
+                accepted.append(point)
+                continue
+            key = (point.device_id, point.type)
+            newest = self._newest_timestamps.get(key)
+            if newest is not None and point.timestamp < newest:
+                _LOGGER.debug(
+                    "Dropping stale location for device %s type %s: %s < %s",
+                    point.device_id,
+                    point.type,
+                    point.timestamp,
+                    newest,
+                )
+                continue
+            self._newest_timestamps[key] = point.timestamp
+            accepted.append(point)
+        return accepted
 
 
 @dataclass

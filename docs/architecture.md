@@ -84,6 +84,7 @@ hentar dei og lagrar `mqtt_broker`, `mqtt_username`, `mqtt_password` og
   /downlink/vehicle/{device_id}/realtimeDate/state
   /downlink/vehicle/{device_id}/realtimeDate/event
   /downlink/vehicle/{device_id}/realtimeDate/attributes
+  /downlink/vehicle/{device_id}/realtimeDate/location  # frivillig
   ```
 
   Utan einings-ID-ar fell han tilbake til jokerteiknet `+`.
@@ -91,6 +92,8 @@ hentar dei og lagrar `mqtt_broker`, `mqtt_username`, `mqtt_password` og
 - Innkomande lastar er JSON; einings-ID-en frå emnet blir lagd inn som
   `device_id` før tolking til `DeviceStateMessage`, `DeviceEventMessage` eller
   `DeviceAttributesMessage`.
+- `location` er frivillig (`subscribe_location=True`); `extra_topics` kan ta
+  med fleire emne, og `on_raw` får alle rå meldingar før kanalfiltrering.
 
 Paho køyrer nettverksløkka si i **ein eigen tråd**. Kvart tilbakekall som når
 koden din blir flytta over til asyncio-løkka SDK-en er bunden til, via
@@ -116,9 +119,6 @@ Sjå [Home Assistant og andre hendingsløkker](event-loops.md) for mønster.
 To delar av kodebasen er framleis stubbar og er dokumenterte berre for
 fullstendig oversikt:
 
-- `MowerMQTT` (brukt av `MowerClient.subscribe_device_updates`) abonnerer på
-  `device/{id}/status` — eit TODO-emneskjema. Bruk `NavimowSDK` for
-  sanntidsdata.
 - `NavimowCloud` tolkar emne på forma `navimow/{id}/{kanal}`, medan meglaren
   publiserer `/downlink/vehicle/...`. Objektmodellen `Navimow` /
   `NavimowCloudDevice` tek difor enno ikkje imot sanntidsmeldingar frå den
