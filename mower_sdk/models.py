@@ -114,6 +114,17 @@ class MowerStatus(Enum):
     UNKNOWN = "unknown"  # Ukjend status
 
 
+# `vehicleState` på posisjonskanalen, observert i ei reell klippeøkt:
+# 1 medan klipparen stod ferdig lada i stasjonen, 4 medan han klipte,
+# 5 på veg heim, 2 i stasjonen medan batteriet steig (1 att ved 90 %).
+VEHICLE_STATE_TO_STATUS: dict[int, MowerStatus] = {
+    1: MowerStatus.DOCKED,
+    2: MowerStatus.CHARGING,
+    4: MowerStatus.MOWING,
+    5: MowerStatus.RETURNING,
+}
+
+
 class MowerCommand(Enum):
     """Opprekning for kontrollkommandoar til robotklipparen."""
 
@@ -497,6 +508,13 @@ def _float_or_none(value: Any) -> Optional[float]:
     return result if math.isfinite(result) else None
 
 
+def _int_list_or_none(value: Any) -> Optional[list[int]]:
+    if not isinstance(value, list):
+        return None
+    ints = [_int_or_none(item) for item in value]
+    return [item for item in ints if item is not None]
+
+
 def _int_or_none(value: Any) -> Optional[int]:
     """Tolk heiltal, òg frå desimaltal og tal som strengar ("1755000000.5")."""
     if isinstance(value, bool):
@@ -525,12 +543,22 @@ class DeviceLocationMessage:
     mowing_percentage: Optional[float] = None
     subtotal_area: Optional[float] = None
     mow_start_type: Optional[Any] = None
+    current_zone: Optional[int] = None
+    zone_progress: Optional[float] = None
+    action: Optional[int] = None
+    sub_action: Optional[int] = None
+    week_area: Optional[float] = None
+    partition_ids: Optional[list[int]] = None
+    task_delay: Optional[bool] = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DeviceLocationMessage":
         """Lag ei posisjonslesing frå den observerte leidningsforma."""
         raw_type = payload.get("type")
+        raw_progress = _int_or_none(payload.get("currentMowProgress"))
+        zone_progress = raw_progress / 100 if raw_progress is not None else None
+        task_delay = payload.get("taskDelay")
         return cls(
             device_id=str(payload.get("device_id", "")),
             x=_float_or_none(payload.get("postureX")),
@@ -544,8 +572,22 @@ class DeviceLocationMessage:
             mowing_percentage=_float_or_none(payload.get("mowingPercentage")),
             subtotal_area=_float_or_none(payload.get("subtotalArea")),
             mow_start_type=payload.get("mowStartType"),
+            current_zone=_int_or_none(payload.get("currentMowBoundary")),
+            zone_progress=zone_progress,
+            action=_int_or_none(payload.get("action")),
+            sub_action=_int_or_none(payload.get("subAction")),
+            week_area=_float_or_none(payload.get("mowingWeekArea")),
+            partition_ids=_int_list_or_none(payload.get("partitionIds")),
+            task_delay=task_delay if isinstance(task_delay, bool) else None,
             raw=dict(payload),
         )
+
+    @property
+    def status(self) -> Optional[MowerStatus]:
+        """`vehicleState` omsett til `MowerStatus`; `None` når feltet manglar."""
+        if self.vehicle_state is None:
+            return None
+        return VEHICLE_STATE_TO_STATUS.get(self.vehicle_state, MowerStatus.UNKNOWN)
 
     @property
     def is_placeholder(self) -> bool:
@@ -564,6 +606,13 @@ class DeviceLocationMessage:
             "mowing_percentage": self.mowing_percentage,
             "subtotal_area": self.subtotal_area,
             "mow_start_type": self.mow_start_type,
+            "current_zone": self.current_zone,
+            "zone_progress": self.zone_progress,
+            "action": self.action,
+            "sub_action": self.sub_action,
+            "week_area": self.week_area,
+            "partition_ids": self.partition_ids,
+            "task_delay": self.task_delay,
             "raw": self.raw,
         }
 
