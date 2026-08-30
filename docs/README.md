@@ -14,7 +14,8 @@ kommandoar over REST og strøymer sanntidstilstand over MQTT.
 | [Feil og feilsøking](errors.md) | Unntakstypar, vanlege feil, logging |
 | [Home Assistant og andre hendingsløkker](event-loops.md) | Løkkeeigarskap, trådtryggleik, HA-mønster |
 
-Køyrbare skript ligg i [`../examples`](../examples). Dei les
+Køyrbare skript ligg i [`../examples`](../examples); `watch_mower.py` er det
+mest komplette (REST-status, éin MQTT-oppsetthenting, alle fire kanalane). Dei les
 `NAVIMOW_TOKEN` og `NAVIMOW_API_URL` frå miljøet, så du kan prøve dei utan å
 endre kode:
 

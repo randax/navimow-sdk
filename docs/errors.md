@@ -55,6 +55,14 @@ sendt (så abonnementa treffer verkelege ID-ar); at teiknet framleis er gyldig
 (WebSocket-handtrykket ber det); og slå på feilsøkingslogging (nedanfor) for å
 sjå emne og lastar.
 
+**`MowerAPIError: … Request too frequent. Please retry after 1 minute`**
+— `/openapi/mqtt/userInfo/get/v2` er ratebegrensa. Kall
+`async_refresh_mqtt_info()` éin gong per prosess og del oppsettet mellom
+einingane (slik `examples/watch_mower.py` gjer). Merk at
+`MowerClient.async_subscribe_device_updates()` friskar opp oppsettet ved kvart
+kall; bruk `NavimowSDK` med `records=devices`, eller `client.mqtt`
+direkte, når du følgjer fleire einingar.
+
 **Åtvaring om jokerteikn-abonnement** (`subscribing cloud topics with wildcard`)
 — `records` var tom. Send einingslista.
 
