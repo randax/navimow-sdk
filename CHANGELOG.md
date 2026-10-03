@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- `HTTPSession.request()` tek `data=` for skjemakoda kroppar
+  (`application/x-www-form-urlencoded`), som OAuth-teiknendepunktet krev.
+  `UrllibSession` støttar det, og `aiohttp.ClientSession` gjorde det frå før.
+  `json=` og `data=` saman gjev `ValueError`.
+
 ## 0.4.0
 
 - `DeviceLocationMessage` får `current_zone`, `zone_progress`, `action`,

@@ -47,10 +47,15 @@ class HTTPSession(Protocol):
         url: str,
         *,
         json: Optional[dict[str, Any]] = None,
+        data: Optional[dict[str, str]] = None,
         params: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, str]] = None,
     ) -> HTTPRequestContext:
-        """Lag ein asynkron førespurnadskontekst."""
+        """Lag ein asynkron førespurnadskontekst.
+
+        `json` blir sendt som JSON-kropp og `data` som skjemakoda kropp
+        (`application/x-www-form-urlencoded`); berre eitt av dei kan brukast.
+        """
 
 
 class _SafeRedirectHandler(HTTPRedirectHandler):
@@ -118,14 +123,16 @@ class _UrllibRequestContext:
         session: "UrllibSession",
         method: str,
         url: str,
-        data: Optional[dict[str, Any]],
+        json: Optional[dict[str, Any]],
+        form: Optional[dict[str, str]],
         params: Optional[dict[str, Any]],
         headers: Optional[dict[str, str]],
     ) -> None:
         self._session = session
         self._method = method
         self._url = url
-        self._data = data
+        self._json = json
+        self._form = form
         self._params = params
         self._headers = headers
 
@@ -150,9 +157,12 @@ class _UrllibRequestContext:
 
         headers = dict(self._headers or {})
         body = None
-        if self._data is not None:
-            body = json_module.dumps(self._data).encode("utf-8")
+        if self._json is not None:
+            body = json_module.dumps(self._json).encode("utf-8")
             headers.setdefault("Content-Type", "application/json")
+        elif self._form is not None:
+            body = urlencode(self._form).encode("utf-8")
+            headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
 
         request = Request(url, data=body, headers=headers, method=self._method)
         try:
@@ -205,10 +215,13 @@ class UrllibSession:
         url: str,
         *,
         json: Optional[dict[str, Any]] = None,
+        data: Optional[dict[str, str]] = None,
         params: Optional[dict[str, Any]] = None,
         headers: Optional[dict[str, str]] = None,
     ) -> HTTPRequestContext:
-        return _UrllibRequestContext(self, method, url, json, params, headers)
+        if json is not None and data is not None:
+            raise ValueError("json and data cannot both be set")
+        return _UrllibRequestContext(self, method, url, json, data, params, headers)
 
     async def close(self) -> None:
         self.closed = True

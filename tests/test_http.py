@@ -58,6 +58,33 @@ class UrllibSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.get_header("Authorization"), "Bearer example-token")
         self.assertEqual(request.get_header("Content-type"), "application/json")
 
+    async def test_request_serializes_form_data(self):
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["request"] = request
+            return FakeHTTPResponse(200, b"{}")
+
+        session = self.http_module.UrllibSession()
+        with mock.patch.object(self.http_module, "_open", side_effect=fake_urlopen):
+            async with session.request(
+                "POST",
+                "https://api.example.test/token",
+                data={"grant_type": "authorization_code", "redirect_uri": "http://x/cb?a=1"},
+            ):
+                pass
+
+        request = captured["request"]
+        self.assertEqual(
+            request.data, b"grant_type=authorization_code&redirect_uri=http%3A%2F%2Fx%2Fcb%3Fa%3D1"
+        )
+        self.assertEqual(request.get_header("Content-type"), "application/x-www-form-urlencoded")
+
+    async def test_request_rejects_json_and_form_data_together(self):
+        session = self.http_module.UrllibSession()
+        with self.assertRaises(ValueError):
+            session.request("POST", "https://api.example.test", json={}, data={})
+
     async def test_transport_errors_are_normalized(self):
         session = self.http_module.UrllibSession()
         with mock.patch.object(self.http_module, "_open", side_effect=OSError("offline")):

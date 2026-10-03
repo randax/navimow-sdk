@@ -27,7 +27,7 @@ Vel inngangen som passar jobben:
 | Liste klipparar, lese eit statusbilete, starte/pause/halde fram/dokke | `MowerClient` (eller `MowerAPI` direkte) |
 | Ta imot tilstand/hendingar/attributtar etter kvart som dei skjer | `NavimowSDK` |
 | Modellere kvar klippar som eit objekt med eigen sist kjend tilstand og abonnentar | `Navimow` → `NavimowCloudDevice` → `StateManager` |
-| Bruke din eigen HTTP-klient | Kva som helst objekt som oppfyller `HTTPSession`-protokollen i `mower_sdk.http` |
+| Bruke din eigen HTTP-klient | Kva som helst objekt som oppfyller `HTTPSession`-protokollen i `mower_sdk.http`; `request()` tek anten `json=` eller skjemakoda `data=` |
 
 ## REST-transport
 
