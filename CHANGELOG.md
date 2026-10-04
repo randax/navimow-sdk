@@ -6,6 +6,10 @@
   (`application/x-www-form-urlencoded`), som OAuth-teiknendepunktet krev.
   `UrllibSession` støttar det, og `aiohttp.ClientSession` gjorde det frå før.
   `json=` og `data=` saman gjev `ValueError`.
+- `LocationFilter` merkar den første framdriftsmeldinga etter start med
+  `is_stale_progress`; ho gjentek sluttverdiane frå førre økt.
+- Dokumenterer at posisjonsmeldingane manglar `vehicleState` medan
+  tilstandskanalen seier feil, og tydinga av `action` / `sub_action`.
 
 ## 0.4.0
 

@@ -550,6 +550,9 @@ class DeviceLocationMessage:
     week_area: Optional[float] = None
     partition_ids: Optional[list[int]] = None
     task_delay: Optional[bool] = None
+    # Sett av `LocationFilter`: første framdriftsmelding (type 2) etter start
+    # gjentek verdiane frå førre økt før teljarane blir nullstilte.
+    is_stale_progress: bool = False
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -613,6 +616,7 @@ class DeviceLocationMessage:
             "week_area": self.week_area,
             "partition_ids": self.partition_ids,
             "task_delay": self.task_delay,
+            "is_stale_progress": self.is_stale_progress,
             "raw": self.raw,
         }
 
@@ -631,10 +635,23 @@ def parse_location_payload(payload: Any, device_id: str) -> list[DeviceLocationM
 
 
 class LocationFilter:
-    """Filtrer bort plasshaldarar og seint komne posisjonslesingar."""
+    """Filtrer bort plasshaldarar og seint komne posisjonslesingar.
+
+    Merkar òg den første framdriftsmeldinga (type 2) per eining etter at
+    klipparen sist var i ein annan tilstand enn klipping (eller sidan filteret
+    vart oppretta) som `is_stale_progress`: ho ber verdiane frå førre økt.
+    """
 
     def __init__(self) -> None:
         self._newest_timestamps: dict[tuple[str, str], int] = {}
+        self._progress_seen: set[str] = set()
+
+    def _mark_progress(self, point: DeviceLocationMessage) -> None:
+        if point.type == "2":
+            point.is_stale_progress = point.device_id not in self._progress_seen
+            self._progress_seen.add(point.device_id)
+        elif point.status not in (None, MowerStatus.MOWING):
+            self._progress_seen.discard(point.device_id)
 
     def filter(self, points: list[DeviceLocationMessage]) -> list[DeviceLocationMessage]:
         accepted: list[DeviceLocationMessage] = []
@@ -642,6 +659,7 @@ class LocationFilter:
             if point.is_placeholder:
                 _LOGGER.debug("Dropping placeholder location for device %s", point.device_id)
                 continue
+            self._mark_progress(point)
             if point.timestamp is None or point.type is None:
                 accepted.append(point)
                 continue

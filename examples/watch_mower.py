@@ -62,8 +62,9 @@ def on_location(msg: DeviceLocationMessage) -> None:
         status = msg.status.value if msg.status else None
         print(f"[posisjon] {msg.device_id}: x={msg.x} y={msg.y} theta={msg.theta} status={status}")
     elif msg.type == "2":
+        stale = " (forelda, frå førre økt)" if msg.is_stale_progress else ""
         print(
-            f"[framdrift] {msg.device_id}: sone={msg.current_zone} "
+            f"[framdrift]{stale} {msg.device_id}: sone={msg.current_zone} "
             f"soneframdrift={msg.zone_progress}% oppdrag={msg.mowing_percentage}% "
             f"areal={msg.subtotal_area}m² fase={msg.action}/{msg.sub_action}"
         )

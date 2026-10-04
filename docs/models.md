@@ -95,10 +95,11 @@ Verdiar som ikkje står i lista går uendra gjennom (t.d. `charging`).
 | `mow_start_type` | `Any \| None` | Rå starttype |
 | `current_zone` | `int \| None` | `currentMowBoundary` – sona som blir klipt no |
 | `zone_progress` | `float \| None` | `currentMowProgress / 100`, 0–100 % for gjeldande sone (nullstillast ved sonebyte) |
-| `action`, `sub_action` | `int \| None` | Delfase i sona (observert 8/6 → 5 → korte -1); tyding ikkje kjend |
+| `action`, `sub_action` | `int \| None` | Delfase i sona, sjå tabellen under |
 | `week_area` | `float \| None` | `mowingWeekArea` – klipt areal denne veka |
 | `partition_ids` | `list[int] \| None` | Sonene i gjeldande oppdrag (type 3, ca. kvart 5. minutt under klipping) |
-| `task_delay` | `bool \| None` | `taskDelay` frå type 4 |
+| `task_delay` | `bool \| None` | `taskDelay` frå type 4 (berre `false` observert) |
+| `is_stale_progress` | `bool` | Sett av `LocationFilter`: første type 2 etter start ber verdiane frå førre økt |
 | `raw` | `dict` | Uendra punkt frå leidninga |
 
 Meldingstypar (`type`): `1` posisjon, `2` framdrift, `3` soneliste / hjarteslag
@@ -115,6 +116,29 @@ Meldingstypar (`type`): `1` posisjon, `2` framdrift, `3` soneliste / hjarteslag
 
 Tilstandskanalen (`…/state`) sender aldri «ladar», så `vehicleState == 2` er einaste
 signalet for `CHARGING`.
+
+**Feil er usynleg på posisjonskanalen.** I ei økt der tilstandskanalen sa `Error`
+i om lag seks minutt heldt klipparen fram med å køyre, men alle type 1-meldingane
+mangla `vehicleState`, så `status` var `None`. Feltet kom att (som 5) først då
+tilstandskanalen gjekk til `isDocking`. Posisjonar som endrar seg medan `status`
+er `None`, tyder «sjå tilstandskanalen», ikkje «ukjend».
+
+`action` / `sub_action` (type 2), observert over to økter:
+
+| `action` | `sub_action` | Observert |
+|---|---|---|
+| 8 | 6 | Frå soneframdrift 0 og dei første ~20 minutta av kvar sone; truleg kantklipp |
+| 5 | – | Resten av sona, fram til 100 % |
+| -1 | – | Einskilde meldingar midt i sona utan endring i posisjon eller `vehicleState`; les som «ingen fase rapportert» |
+
+**Første framdriftsmelding etter start er forelda.** Den første type 2 etter at
+klipparen byrjar å klippe gjentek sluttverdiane frå førre økt (t.d. sone 1,
+`mowingPercentage` 100 og gamalt `subtotalArea`) før teljarane blir nullstilte i
+neste melding. `LocationFilter` set `is_stale_progress` på den første type 2 per
+eining etter at `status` sist var noko anna enn `MOWING` (eller sidan filteret
+vart oppretta), og ein `mowingPercentage == 100` der skal ikkje lesast som
+«ferdig». Startar SDK-en midt i ei økt, blir den første ekte framdriftsmeldinga
+òg merkt.
 
 `mapWorkPosition` (type 2) er ikkje eksponert: det er berre ein pakka streng av fem
 big-endian int32 i hex – `action, subAction, mowStartType, currentMowBoundary,

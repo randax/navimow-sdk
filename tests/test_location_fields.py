@@ -89,5 +89,95 @@ class VehicleStateTest(unittest.TestCase):
         self.assertIsNone(m.DeviceLocationMessage.from_dict(HEARTBEAT).status)
 
 
+# Ordrett frå ei seinare økt: klipparen køyrde rundt medan tilstandskanalen sa
+# «Error», og posisjonsmeldingane mangla `vehicleState` heilt til han vende heim.
+POSE_IN_ERROR = {
+    "postureTheta": "1.017",
+    "postureX": "-0.61",
+    "postureY": "-0.904",
+    "time": 1788093775011,
+    "type": 1,
+}
+POSE_MOWING = {**POSE_CHARGING, "time": 1788161432759, "vehicleState": 4}
+POSE_RETURNING = {**POSE_CHARGING, "time": 1788087036598, "vehicleState": 5}
+# Første type 2 etter start: verdiane frå førre økt (sone 1, 100 %, gamalt areal).
+STALE_PROGRESS = {
+    "action": 5,
+    "currentMowBoundary": 1,
+    "currentMowProgress": 0,
+    "mowStartType": 1,
+    "mowingPercentage": 100,
+    "mowingWeekArea": "161.9",
+    "subtotalArea": "161.97",
+    "time": 1788161432780,
+    "type": 2,
+}
+FRESH_PROGRESS = {**PROGRESS_ZONE8, "time": 1788161483147, "mowingPercentage": 0}
+
+
+def _points(m, *payloads):
+    return [m.DeviceLocationMessage.from_dict({"device_id": "dev", **p}) for p in payloads]
+
+
+class ErrorWindowTest(unittest.TestCase):
+    def test_pose_without_vehicle_state_has_no_status_but_keeps_position(self):
+        m = _models()
+        point = m.DeviceLocationMessage.from_dict(POSE_IN_ERROR)
+        self.assertIsNone(point.vehicle_state)
+        self.assertIsNone(point.status)
+        self.assertEqual((point.x, point.y), (-0.61, -0.904))
+
+
+class StaleProgressTest(unittest.TestCase):
+    def test_first_progress_message_is_marked_stale(self):
+        m = _models()
+        f = m.LocationFilter()
+        stale, fresh = f.filter(_points(m, STALE_PROGRESS, FRESH_PROGRESS))
+        self.assertTrue(stale.is_stale_progress)
+        self.assertFalse(fresh.is_stale_progress)
+
+    def test_first_progress_after_mowing_resumes_is_marked_stale(self):
+        m = _models()
+        f = m.LocationFilter()
+        # Økt 1: framdrift, heim, i stasjonen. Økt 2: klippar att, så gamal framdrift.
+        first = f.filter(_points(m, STALE_PROGRESS, FRESH_PROGRESS, POSE_RETURNING))
+        second = f.filter(
+            _points(
+                m,
+                {**POSE_CHARGING, "time": 1788161400000, "vehicleState": 1},
+                {**POSE_MOWING, "time": 1788161432759},
+                {**STALE_PROGRESS, "time": 1788161500000},
+                {**FRESH_PROGRESS, "time": 1788161550000},
+            )
+        )
+        self.assertEqual([p.is_stale_progress for p in first], [True, False, False])
+        self.assertEqual([p.is_stale_progress for p in second], [False, False, True, False])
+
+    def test_pose_without_vehicle_state_does_not_reset_progress(self):
+        m = _models()
+        f = m.LocationFilter()
+        points = f.filter(
+            _points(
+                m,
+                FRESH_PROGRESS,
+                {**POSE_IN_ERROR, "time": 1788161500000},
+                {**FRESH_PROGRESS, "time": 1788161550000},
+            )
+        )
+        self.assertEqual([p.is_stale_progress for p in points], [True, False, False])
+
+    def test_stale_flag_is_per_device_and_in_to_dict(self):
+        m = _models()
+        f = m.LocationFilter()
+        a = m.DeviceLocationMessage.from_dict({"device_id": "a", **FRESH_PROGRESS})
+        b = m.DeviceLocationMessage.from_dict({"device_id": "b", **FRESH_PROGRESS})
+        f.filter([a])
+        f.filter([b])
+        self.assertTrue(a.is_stale_progress)
+        self.assertTrue(b.is_stale_progress)
+        self.assertIs(a.to_dict()["is_stale_progress"], True)
+        self.assertIs(m.DeviceLocationMessage.from_dict(HEARTBEAT).is_stale_progress, False)
+
+
 if __name__ == "__main__":
     unittest.main()

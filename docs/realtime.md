@@ -102,7 +102,9 @@ Kanalen ber fire meldingstypar: `1` posisjon (med `vehicleState`, som `status`
 omset til `MowerStatus` – inkludert `CHARGING`, som tilstandskanalen aldri
 sender), `2` framdrift per sone og for heile oppdraget, `3` soneliste /
 hjarteslag og `4` `task_delay`. Sjå [models.md](models.md) for alle felta og
-kodinga av `vehicleState`.
+kodinga av `vehicleState`, tydinga av `action` og dei to fellene: type 1 manglar
+`vehicleState` medan tilstandskanalen seier feil, og den første type 2 etter
+start er forelda (`is_stale_progress`).
 
 `x` og `y` er meter relativt til ladestasjonen, og `theta` er radianar.
 `get_cached_location(device_id)` gjev sist godtekne `DeviceLocationMessage`.
